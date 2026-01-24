@@ -12,7 +12,7 @@ def main() -> None:
 
     assets_dir = Path(__file__).resolve().parent / "assets"
     gs = load_ply_gaussians(str(assets_dir / "gaussians.ply"))
-    client.log_points("gaussians", gs.positions, gs.colors_rgb8)
+    client.log_points("gaussians", gs.positions, gs.colors_rgb8, point_size=0.025)
 
     try:
         while True:

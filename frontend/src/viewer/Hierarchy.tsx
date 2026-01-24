@@ -1,21 +1,24 @@
-import type { PointCloudInfo } from './api'
+import type { ElementInfo } from './api'
 
-type Props = {
-  clouds: PointCloudInfo[] | null
+export type HierarchyProps = {
+  elements: ElementInfo[] | null
   selectedId: string | null
   onSelect: (id: string | null) => void
   onFocus: (id: string) => void
 }
 
-export default function Hierarchy({ clouds, selectedId, onSelect, onFocus }: Props) {
+export default function Hierarchy({ elements, selectedId, onSelect, onFocus }: HierarchyProps) {
+  const pointclouds = (elements ?? []).filter((e) => e.type === 'pointcloud')
+
   return (
     <div style={{ padding: 12, width: 260 }}>
       <strong>Scene</strong>
-      <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75 }}>Point clouds</div>
+      <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75 }}>Elements</div>
 
       <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
-        {(clouds ?? []).map((c) => {
+        {pointclouds.map((c) => {
           const selected = c.id === selectedId
+          const pointCount = Number((c.summary as any)?.pointCount ?? 0)
           return (
             <button
               key={c.id}
@@ -33,22 +36,20 @@ export default function Hierarchy({ clouds, selectedId, onSelect, onFocus }: Pro
               title={c.id}
             >
               <div style={{ fontSize: 13, fontWeight: 600 }}>{c.name}</div>
-              <div style={{ fontSize: 12, opacity: 0.75 }}>{c.pointCount.toLocaleString()} pts</div>
+              <div style={{ fontSize: 12, opacity: 0.75 }}>{pointCount.toLocaleString()} pts</div>
             </button>
           )
         })}
 
-        {clouds && clouds.length === 0 && <div style={{ opacity: 0.75 }}>(no clouds)</div>}
-        {!clouds && <div style={{ opacity: 0.75 }}>(loading…)</div>}
+        {elements && pointclouds.length === 0 && <div style={{ opacity: 0.75 }}>(no elements)</div>}
+        {!elements && <div style={{ opacity: 0.75 }}>(loading…)</div>}
       </div>
 
-      {selectedId === null && clouds && clouds.length > 0 && (
+      {selectedId === null && elements && elements.length > 0 && (
         <div style={{ marginTop: 10, fontSize: 12, opacity: 0.65 }}>(nothing selected)</div>
       )}
 
-      <div style={{ marginTop: 14, fontSize: 12, opacity: 0.65 }}>
-        Tip: click to select, double-click to focus the camera.
-      </div>
+      <div style={{ marginTop: 14, fontSize: 12, opacity: 0.65 }}>Tip: click to select, double-click to focus the camera.</div>
     </div>
   )
 }

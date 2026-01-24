@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import PointCloudCanvas from './viewer/PointCloudCanvas'
-import { fetchEvents, fetchPointCloudList, PointCloudInfo } from './viewer/api'
+import { fetchElements, fetchEvents, type ElementInfo } from './viewer/api'
 import Inspector from './viewer/Inspector'
-import Hierarchy from './viewer/Hierarchy'
+import Hierarchy, { type HierarchyProps } from './viewer/Hierarchy'
 
 function CollapseHandle({ side, open, onToggle }: { side: 'left' | 'right'; open: boolean; onToggle: () => void }) {
   const isLeft = side === 'left'
@@ -57,27 +57,34 @@ function CollapseHandle({ side, open, onToggle }: { side: 'left' | 'right'; open
 }
 
 export default function App() {
-  const [clouds, setClouds] = useState<PointCloudInfo[] | null>(null)
+  const [elements, setElements] = useState<ElementInfo[] | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [leftOpen, setLeftOpen] = useState(true)
   const [rightOpen, setRightOpen] = useState(true)
   const [focusTarget, setFocusTarget] = useState<string | null>(null)
   const lastRev = useRef<number>(-1)
+  const didInitFocus = useRef(false)
+
+  const pointclouds = useMemo(() => (elements ?? []).filter((e) => e.type === 'pointcloud'), [elements])
 
   useEffect(() => {
-    fetchPointCloudList()
+    fetchElements()
       .then((items) => {
-        setClouds(items)
-        // Nothing selected by default.
+        setElements(items)
         setSelectedId(null)
 
-        // But do set an initial camera focus target to the first-logged cloud.
-        const ordered =
-          items.length > 0 && items.every((c) => typeof c.createdAt === 'number')
-            ? [...items].sort((a, b) => (a.createdAt! - b.createdAt!))
-            : items
-        if (ordered.length > 0) setFocusTarget(ordered[0].id)
+        // Default focus: first element that appears (only once).
+        if (!didInitFocus.current) {
+          const ordered =
+            items.length > 0 && items.every((c) => typeof c.createdAt === 'number')
+              ? [...items].sort((a, b) => (a.createdAt! - b.createdAt!))
+              : items
+          if (ordered.length > 0) {
+            didInitFocus.current = true
+            setFocusTarget(ordered[0].id)
+          }
+        }
       })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
   }, [])
@@ -92,16 +99,15 @@ export default function App() {
 
         if (ev.globalRevision !== lastRev.current) {
           lastRev.current = ev.globalRevision
-          const items = await fetchPointCloudList()
+          const items = await fetchElements()
           if (cancelled) return
-          setClouds(items)
+          setElements(items)
 
           if (items.length === 0) {
             setSelectedId(null)
             return
           }
 
-          // Keep current selection if it still exists; otherwise clear.
           if (selectedId !== null && !items.some((c) => c.id === selectedId)) {
             setSelectedId(null)
           }
@@ -122,24 +128,23 @@ export default function App() {
   }, [selectedId])
 
   const selected = useMemo(() => {
-    if (!clouds || selectedId === null) return null
-    return clouds.find((c) => c.id === selectedId) ?? null
-  }, [clouds, selectedId])
+    if (!elements || selectedId === null) return null
+    return elements.find((c) => c.id === selectedId) ?? null
+  }, [elements, selectedId])
 
-  const orderedClouds = useMemo(() => {
-    const items = clouds ?? []
-    // Prefer API-provided createdAt (true log order). Fallback: keep current list order.
+  const orderedPointclouds = useMemo(() => {
+    const items = pointclouds
     if (items.every((c) => typeof c.createdAt === 'number')) {
       return [...items].sort((a, b) => (a.createdAt! - b.createdAt!))
     }
     return items
-  }, [clouds])
+  }, [pointclouds])
 
   return (
     <div className="app" style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
       <div className="header" style={{ borderBottom: '1px solid #1b2235', background: '#0b1020', color: '#e8ecff' }}>
         <strong>begira</strong>
-        <span style={{ opacity: 0.7 }}>point cloud viewer</span>
+        <span style={{ opacity: 0.7 }}>viewer</span>
         <div style={{ flex: 1 }} />
         {error && <span style={{ color: 'crimson' }}>{error}</span>}
       </div>
@@ -148,10 +153,12 @@ export default function App() {
         {leftOpen && (
           <div style={{ borderRight: '1px solid #1b2235', background: '#0f1630', color: '#e8ecff' }}>
             <Hierarchy
-              clouds={clouds}
-              selectedId={selectedId}
-              onSelect={setSelectedId}
-              onFocus={(id) => setFocusTarget(id)}
+              {...({
+                elements,
+                selectedId,
+                onSelect: setSelectedId,
+                onFocus: (id: string) => setFocusTarget(id),
+              } satisfies HierarchyProps)}
             />
           </div>
         )}
@@ -160,12 +167,17 @@ export default function App() {
 
         <div style={{ flex: 1, minWidth: 0 }}>
           <PointCloudCanvas
-            cloudIds={orderedClouds.map((c) => c.id)}
+            cloudIds={orderedPointclouds.map((c) => c.id)}
             selectedId={selectedId}
             onSelect={setSelectedId}
             focusTarget={focusTarget}
-            onFocus={(id) => setFocusTarget(id)}
-            cloudMetaBounds={orderedClouds.map((c) => c.bounds).filter(Boolean) as any}
+            onFocus={(id) => {
+              // `id` from the canvas is used only to *clear* a pending focus request.
+              // Camera focus requests come from double-click actions (Hierarchy / scene).
+              if (id === null) setFocusTarget(null)
+              else setFocusTarget(id)
+            }}
+            cloudMetaBounds={orderedPointclouds.map((c) => c.bounds).filter(Boolean) as any}
           />
         </div>
 

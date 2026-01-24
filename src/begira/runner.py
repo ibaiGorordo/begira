@@ -41,25 +41,11 @@ class BegiraServer:
         positions: np.ndarray | object,
         colors: np.ndarray | None = None,
         *,
-        cloud_id: str | None = None,
+        element_id: str | None = None,
         point_size: float | None = 0.05,
     ) -> str:
-        """Log (add/update) a point cloud.
+        """Log (add/update) a pointcloud element."""
 
-        You can call this in two ways:
-        - `log_points(name, positions, colors=None, ...)`
-            - positions: array-like (N,3)
-            - colors (optional): array-like (N,3), uint8 [0..255] or float [0..1]
-        - `log_points(name, pointcloud_data, ...)`
-            - pointcloud_data: `begira.ply.PointCloudData` (or any object with
-              `.positions` and optional `.colors` attributes)
-
-        - point_size (optional): rendered point radius/size (in world units; default ~0.02)
-
-        Returns the point cloud id.
-        """
-
-        # Convenience: allow passing a pointcloud object directly.
         if colors is None and not isinstance(positions, np.ndarray):
             pos_attr = getattr(positions, "positions", None)
             if pos_attr is not None:
@@ -67,12 +53,12 @@ class BegiraServer:
                 positions = pos_attr
                 colors = col_attr
 
-        pc = REGISTRY.upsert(
+        pc = REGISTRY.upsert_pointcloud(
             name=name,
             positions=positions,  # type: ignore[arg-type]
             colors=colors,
             point_size=point_size,
-            cloud_id=cloud_id,
+            element_id=element_id,
         )
         return pc.id
 
@@ -81,16 +67,10 @@ class BegiraServer:
         name: str,
         path: str,
         *,
-        cloud_id: str | None = None,
+        element_id: str | None = None,
         point_size: float | None = 0.05,
     ) -> str:
-        """Load a `.ply` file and log it as a point cloud.
-
-        This is a thin convenience wrapper around `begira.ply.load_ply_pointcloud()`
-        + `log_points()`.
-
-        Returns the point cloud id.
-        """
+        """Load a `.ply` file and log it as a pointcloud element."""
 
         from .ply import load_ply_pointcloud
 
@@ -99,7 +79,7 @@ class BegiraServer:
             name,
             pc.positions,
             pc.colors,
-            cloud_id=cloud_id,
+            element_id=element_id,
             point_size=point_size,
         )
 

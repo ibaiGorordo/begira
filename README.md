@@ -157,11 +157,15 @@ python -m build
 ```
 
 ## API contract (current)
-- `GET /api/pointclouds` → list available clouds
-- `GET /api/pointclouds/{id}/meta` → metadata describing how to parse the payload
-- `GET /api/pointclouds/{id}/points` → `application/octet-stream` interleaved bytes per point:
-  - XYZ: 3× float32 (little-endian)
-  - RGB: 3× uint8 (optional, present in `sample`)
+- `GET /api/events` → `{ globalRevision }` used by the frontend to poll for changes
+- `GET /api/elements` → list renderable elements
+- `GET /api/elements/{id}/meta` → element metadata (type-discriminated)
+- `PATCH /api/elements/{id}/meta` → update element settings (currently pointcloud: `pointSize`)
+- `GET /api/elements/{id}/payloads/{name}` → binary payloads (e.g. pointcloud points)
+
+Pointcloud payload format (current): per-point interleaved bytes:
+- XYZ: 3×float32 little-endian
+- optional RGB: 3×uint8
 
 ## Next steps
 - Add file loaders (PLY/LAS/LAZ) and a registry.

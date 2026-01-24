@@ -3,29 +3,18 @@ from __future__ import annotations
 import threading
 import time
 import uuid
-from dataclasses import dataclass
 
 import numpy as np
 
-
-@dataclass
-class PointCloud:
-    id: str
-    name: str
-    positions: np.ndarray  # float32 (n,3)
-    colors: np.ndarray | None  # uint8 (n,3)
-    point_size: float
-    revision: int
-    created_at: float
-    updated_at: float
+from .elements import ElementBase, PointCloudElement
 
 
 class InMemoryRegistry:
     def __init__(self) -> None:
         self._lock = threading.RLock()
-        self._pcs: dict[str, PointCloud] = {}
+        self._elements: dict[str, ElementBase] = {}
         self._global_revision = 0
-        # Deterministic palette colors for clouds that don't provide per-point colors.
+        # Deterministic palette colors for point clouds that don't provide per-point colors.
         # Colors are uint8 RGB.
         self._default_palette: list[tuple[int, int, int]] = [
             (31, 119, 180),  # blue
@@ -40,37 +29,37 @@ class InMemoryRegistry:
             (23, 190, 207),  # cyan
         ]
 
-    def _palette_color_for_new_cloud(self) -> tuple[int, int, int]:
-        # Choose based on current number of clouds (creation order).
-        idx = len(self._pcs) % len(self._default_palette)
+    def _palette_color_for_new_pointcloud(self) -> tuple[int, int, int]:
+        idx = len([e for e in self._elements.values() if isinstance(e, PointCloudElement)]) % len(self._default_palette)
         return self._default_palette[idx]
 
     def global_revision(self) -> int:
         with self._lock:
             return self._global_revision
 
-    def list(self) -> list[PointCloud]:
+    def list_elements(self) -> list[ElementBase]:
         with self._lock:
-            return list(self._pcs.values())
+            return list(self._elements.values())
 
-    def get(self, cloud_id: str) -> PointCloud | None:
+    def get_element(self, element_id: str) -> ElementBase | None:
         with self._lock:
-            return self._pcs.get(cloud_id)
+            return self._elements.get(element_id)
 
-    def update_settings(self, cloud_id: str, *, point_size: float | None = None) -> PointCloud:
+    def update_pointcloud_settings(self, element_id: str, *, point_size: float | None = None) -> PointCloudElement:
         if point_size is not None and (not np.isfinite(point_size) or point_size <= 0):
             raise ValueError("point_size must be a finite positive number")
 
         with self._lock:
-            prev = self._pcs.get(cloud_id)
-            if prev is None:
-                raise KeyError(cloud_id)
+            prev = self._elements.get(element_id)
+            if not isinstance(prev, PointCloudElement):
+                raise KeyError(element_id)
 
             self._global_revision += 1
             now = time.time()
 
-            pc = PointCloud(
+            pc = PointCloudElement(
                 id=prev.id,
+                type="pointcloud",
                 name=prev.name,
                 positions=prev.positions,
                 colors=prev.colors,
@@ -79,18 +68,18 @@ class InMemoryRegistry:
                 created_at=prev.created_at,
                 updated_at=now,
             )
-            self._pcs[cloud_id] = pc
+            self._elements[element_id] = pc
             return pc
 
-    def upsert(
+    def upsert_pointcloud(
         self,
         *,
         name: str,
         positions: np.ndarray,
         colors: np.ndarray | None,
         point_size: float | None = None,
-        cloud_id: str | None = None,
-    ) -> PointCloud:
+        element_id: str | None = None,
+    ) -> PointCloudElement:
         # Validate + normalize early.
         pos = np.asarray(positions)
         if pos.ndim != 2 or pos.shape[1] != 3:
@@ -103,7 +92,6 @@ class InMemoryRegistry:
             if c.shape != pos.shape:
                 raise ValueError(f"colors must have shape {pos.shape}, got {c.shape}")
             if np.issubdtype(c.dtype, np.floating):
-                # Accept [0,1] floats.
                 c = np.clip(c, 0.0, 1.0) * 255.0
             col = np.ascontiguousarray(c, dtype=np.uint8)
 
@@ -111,24 +99,26 @@ class InMemoryRegistry:
             raise ValueError("point_size must be a finite positive number")
 
         with self._lock:
-            if cloud_id is None:
-                cloud_id = uuid.uuid4().hex
+            if element_id is None:
+                element_id = uuid.uuid4().hex
 
             self._global_revision += 1
             now = time.time()
-            prev = self._pcs.get(cloud_id)
+            prev = self._elements.get(element_id)
+            prev_pc = prev if isinstance(prev, PointCloudElement) else None
 
-            # New cloud and no explicit colors: assign a deterministic per-cloud palette color.
-            if prev is None and col is None:
-                r, g, b = self._palette_color_for_new_cloud()
+            # New pointcloud and no explicit colors: assign a deterministic per-cloud palette color.
+            if prev_pc is None and col is None:
+                r, g, b = self._palette_color_for_new_pointcloud()
                 col = np.empty((pos.shape[0], 3), dtype=np.uint8)
                 col[:, 0] = r
                 col[:, 1] = g
                 col[:, 2] = b
 
-            if prev is None:
-                pc = PointCloud(
-                    id=cloud_id,
+            if prev_pc is None:
+                pc = PointCloudElement(
+                    id=element_id,
+                    type="pointcloud",
                     name=name,
                     positions=pos,
                     colors=col,
@@ -138,18 +128,19 @@ class InMemoryRegistry:
                     updated_at=now,
                 )
             else:
-                pc = PointCloud(
-                    id=prev.id,
+                pc = PointCloudElement(
+                    id=prev_pc.id,
+                    type="pointcloud",
                     name=name,
                     positions=pos,
                     colors=col,
-                    point_size=float(point_size) if point_size is not None else prev.point_size,
-                    revision=prev.revision + 1,
-                    created_at=prev.created_at,
+                    point_size=float(point_size) if point_size is not None else prev_pc.point_size,
+                    revision=prev_pc.revision + 1,
+                    created_at=prev_pc.created_at,
                     updated_at=now,
                 )
 
-            self._pcs[cloud_id] = pc
+            self._elements[element_id] = pc
             return pc
 
 

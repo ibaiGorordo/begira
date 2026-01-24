@@ -101,13 +101,19 @@ function FrameCamera({
 }) {
   const { camera, size } = useThree()
 
+  const lastBoundsRef = useRef<{ min: THREE.Vector3; max: THREE.Vector3 } | null>(null)
+  useEffect(() => {
+    lastBoundsRef.current = bounds
+  }, [bounds])
+
   useLayoutEffect(() => {
-    if (!bounds) return
+    const b = lastBoundsRef.current
+    if (!b) return
     if (!Number.isFinite(size.width) || !Number.isFinite(size.height) || size.width <= 1 || size.height <= 1) return
 
     const handle = requestAnimationFrame(() => {
       const perspective = camera as THREE.PerspectiveCamera
-      const { center } = fitCameraToBounds(perspective, size, bounds, {
+      const { center } = fitCameraToBounds(perspective, size, b, {
         up: (camera as THREE.Camera).up,
         forward,
         topDown,
@@ -124,7 +130,8 @@ function FrameCamera({
     })
 
     return () => cancelAnimationFrame(handle)
-  }, [camera, focusToken, size.height, size.width, forward, topDown, bounds])
+    // Intentionally NOT depending on `bounds` identity: selection/meta refreshes can recreate bounds.
+  }, [camera, focusToken, size.height, size.width, forward, topDown])
 
   return null
 }
@@ -267,28 +274,35 @@ export default function PointCloudCanvas({
       return
     }
 
+    // Only set initial focus once, when clouds first appear.
     if (prev === 0 && cloudIds.length > 0) {
       setFocusId(cloudIds[0])
       bumpFocus('startup:first-cloud')
       return
     }
 
+    // If the currently focused id disappears, fall back to first cloud.
     setFocusId((cur) => {
       if (!cur) return cloudIds[0]
       return cloudIds.includes(cur) ? cur : cloudIds[0]
     })
   }, [cloudIds, bumpFocus])
 
-  // External focus request:
+  // External focus request (double-click from hierarchy or scene).
+  // IMPORTANT: this should be the only time selection triggers a refit.
   useEffect(() => {
     if (!focusTarget) return
-    if (!cloudIds.includes(focusTarget)) return
-
-    const prev = focusIdRef.current
-    if (prev !== focusTarget) {
-      setFocusId(focusTarget)
-      bumpFocus('effect:focusTarget')
+    if (!cloudIds.includes(focusTarget)) {
+      // Clear invalid/old focus requests.
+      onFocus(null)
+      return
     }
+
+    // Always refit, even if focusTarget equals current focus id.
+    setFocusId(focusTarget)
+    bumpFocus('effect:focusTarget')
+
+    // Consume the request so it doesn't refire on every render/poll tick.
     onFocus(null)
   }, [cloudIds, focusTarget, bumpFocus, onFocus])
 
@@ -328,7 +342,7 @@ export default function PointCloudCanvas({
 
   return (
     <Canvas
-      key={conventionId}
+      // Do NOT key the canvas by conventionId. That causes a full remount and camera reset.
       camera={{ fov: 60, near: 0.01, far: 1000, position: [2.5, 2.0, 2.5] }}
       dpr={[1, 1.5]}
       onCreated={({ gl, camera }) => {
@@ -370,7 +384,7 @@ export default function PointCloudCanvas({
       <gridHelper args={[10, 10, '#29324a', '#1b2235']} />
 
       {/* World rotated per convention */}
-      <group key={conventionId} quaternion={convention.worldToView}>
+      <group quaternion={convention.worldToView}>
         <axesHelper args={[1.5]} />
         <MultiPointCloudScene
           cloudIds={cloudIds}
@@ -378,18 +392,16 @@ export default function PointCloudCanvas({
           renderMode={renderMode}
           onSelect={(id) => onSelect(id)}
           onFocus={(id) => {
-            const prev = focusIdRef.current
-            if (prev !== id) {
-              setFocusId(id)
-              bumpFocus('cloud:doubleclick-focus')
-            }
+            // Explicit user intent: always refit on double-click, even if it's already focused.
+            setFocusId(id)
+            bumpFocus('cloud:doubleclick-focus')
             onFocus(id)
           }}
         />
       </group>
 
       <OrbitControls
-        key={conventionId}
+        // Do NOT key by conventionId for the same reason as Canvas.
         makeDefault
         minPolarAngle={0}
         maxPolarAngle={Math.PI}

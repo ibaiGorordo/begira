@@ -8,8 +8,8 @@ def test_default_colors_are_deterministic_by_creation_order() -> None:
 
     pos = np.zeros((5, 3), dtype=np.float32)
 
-    a = reg.upsert(name="a", positions=pos, colors=None)
-    b = reg.upsert(name="b", positions=pos, colors=None)
+    a = reg.upsert_pointcloud(name="a", positions=pos, colors=None)
+    b = reg.upsert_pointcloud(name="b", positions=pos, colors=None)
 
     assert a.colors is not None
     assert b.colors is not None
@@ -28,7 +28,6 @@ def test_explicit_colors_override_defaults() -> None:
     pos = np.zeros((3, 3), dtype=np.float32)
     col = np.array([[255, 0, 0], [0, 255, 0], [0, 0, 255]], dtype=np.uint8)
 
-    pc = reg.upsert(name="c", positions=pos, colors=col)
+    pc = reg.upsert_pointcloud(name="c", positions=pos, colors=col)
     assert pc.colors is not None
     assert np.array_equal(pc.colors, col)
-

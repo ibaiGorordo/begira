@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { PointCloudMeta } from './api'
+import { PointCloudElementMeta } from './api'
 
 export type DecodedPointCloud = {
   geometry: THREE.BufferGeometry
@@ -7,7 +7,7 @@ export type DecodedPointCloud = {
   hasColor: boolean
 }
 
-export function decodePointCloud(meta: PointCloudMeta, buf: ArrayBuffer): DecodedPointCloud {
+export function decodePointCloud(meta: PointCloudElementMeta, buf: ArrayBuffer): DecodedPointCloud {
   if (meta.endianness !== 'little') {
     // JS typed arrays are native endian; for now we only support little.
     throw new Error(`Unsupported endianness: ${meta.endianness}`)

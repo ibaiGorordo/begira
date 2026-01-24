@@ -1,20 +1,18 @@
 import { useEffect, useMemo, useState } from 'react'
-import { fetchPointCloudMeta, fetchPointCloudPayload, PointCloudMeta } from './api'
+import { fetchBinaryPayload, fetchPointCloudElementMeta, PointCloudElementMeta } from './api'
 import { decodePointCloud, DecodedPointCloud } from './pointcloudGeometry'
 
 export type UsePointCloudState =
   | { status: 'loading' }
   | { status: 'error'; error: Error }
-  | { status: 'ready'; meta: PointCloudMeta; decoded: DecodedPointCloud }
+  | { status: 'ready'; meta: PointCloudElementMeta; decoded: DecodedPointCloud }
 
 export function usePointCloud(cloudId: string): UsePointCloudState {
-  const [meta, setMeta] = useState<PointCloudMeta | null>(null)
+  const [meta, setMeta] = useState<PointCloudElementMeta | null>(null)
   const [payload, setPayload] = useState<ArrayBuffer | null>(null)
   const [error, setError] = useState<Error | null>(null)
 
-  // Load meta+payload when cloudId changes.
   useEffect(() => {
-    // If no cloud is selected/requested, don't fetch.
     if (!cloudId) {
       setMeta(null)
       setPayload(null)
@@ -27,11 +25,11 @@ export function usePointCloud(cloudId: string): UsePointCloudState {
     setPayload(null)
     setError(null)
 
-    fetchPointCloudMeta(cloudId)
+    fetchPointCloudElementMeta(cloudId)
       .then((m) => {
         if (cancelled) return
         setMeta(m)
-        return fetchPointCloudPayload(m.payload.url)
+        return fetchBinaryPayload(m.payloads.points.url)
       })
       .then((buf) => {
         if (cancelled || !buf) return
@@ -47,23 +45,21 @@ export function usePointCloud(cloudId: string): UsePointCloudState {
     }
   }, [cloudId])
 
-  // Refresh meta periodically (cheap) so settings updates (like pointSize) apply
-  // without forcing a points payload re-download.
+  // Refresh meta periodically so settings updates apply without re-downloading payload.
   useEffect(() => {
     let cancelled = false
     if (!cloudId) return
 
     const tick = async () => {
       try {
-        const m = await fetchPointCloudMeta(cloudId)
+        const m = await fetchPointCloudElementMeta(cloudId)
         if (cancelled) return
         setMeta((prev) => {
-          // Only update if revision changed to avoid rerenders.
           if (!prev || prev.revision !== m.revision || prev.pointSize !== m.pointSize) return m
           return prev
         })
       } catch {
-        // ignore; main load effect surfaces errors
+        // ignore
       }
     }
 

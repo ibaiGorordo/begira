@@ -6,13 +6,14 @@ from .conventions import CoordinateConvention
 
 
 class BegiraClient:
-    """HTTP client for logging point clouds to a running begira server.
+    """HTTP client for logging elements to a running begira server.
 
-    This is the "remote" companion to `begira.run()` / `BegiraServer.log_points()`.
+    Current supported element types:
+      - pointcloud
 
     Contract (current):
-    - POST /api/pointclouds/upload   (JSON)
-    - PUT  /api/pointclouds/{id}/points?name=...&hasColor=...&pointSize=...  (octet-stream)
+      - POST /api/elements/pointclouds/upload   (JSON)
+      - PUT  /api/elements/{id}/payloads/points?name=...&hasColor=...&pointSize=...  (octet-stream)
 
     The uploaded binary payload is interleaved:
       - XYZ: 3*float32 little-endian
@@ -72,17 +73,13 @@ class BegiraClient:
         positions: np.ndarray | object,
         colors: np.ndarray | None = None,
         *,
-        cloud_id: str | None = None,
+        element_id: str | None = None,
         point_size: float | None = 0.05,
         timeout_s: float = 60.0,
     ) -> str:
-        """Upload (add/update) a point cloud into a running server.
+        """Upload (add/update) a pointcloud element into a running server.
 
-        Accepts either:
-        - positions: array-like (N,3) float
-        - OR a pointcloud-like object with `.positions` and optional `.colors`.
-
-        Returns the cloud id.
+        Returns the element id.
         """
 
         # Convenience: allow passing a pointcloud object directly.
@@ -117,7 +114,6 @@ class BegiraClient:
             n = pos.shape[0]
             stride = 15
 
-            # Vectorized interleave: create (n, 15) uint8 buffer and fill.
             out = np.empty((n, stride), dtype=np.uint8)
             out[:, 0:12] = pos.view(np.uint8).reshape(n, 12)
             out[:, 12:15] = col.reshape(n, 3)
@@ -125,29 +121,26 @@ class BegiraClient:
         else:
             payload = pos.tobytes(order="C")
 
-        # httpx is a lightweight dependency used for requests.
         import httpx
 
         with httpx.Client(base_url=self.base_url, timeout=timeout_s) as client:
-            # 1) Request upload (server chooses id if not provided).
             req = {
                 "name": name,
-                "cloudId": cloud_id,
+                "elementId": element_id,
                 "pointCount": int(pos.shape[0]),
                 "hasColor": bool(has_color),
                 "pointSize": float(point_size) if point_size is not None else None,
             }
-            res = client.post("/api/pointclouds/upload", json=req)
+            res = client.post("/api/elements/pointclouds/upload", json=req)
             if res.status_code >= 400:
                 raise RuntimeError(f"Upload request failed: {res.status_code} {res.text}")
 
             data = res.json()
-            cid = str(data.get("id"))
+            eid = str(data.get("id"))
             upload_url = str(data.get("uploadUrl"))
-            if not cid or not upload_url:
+            if not eid or not upload_url:
                 raise RuntimeError(f"Upload request returned invalid response: {data}")
 
-            # 2) Upload payload.
             params = {
                 "name": name,
                 "hasColor": "1" if has_color else "0",
@@ -165,4 +158,4 @@ class BegiraClient:
                 raise RuntimeError(f"Points upload failed: {put.status_code} {put.text}")
 
             out = put.json()
-            return str(out.get("id") or cid)
+            return str(out.get("id") or eid)
