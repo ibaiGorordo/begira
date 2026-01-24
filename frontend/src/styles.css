@@ -1,0 +1,53 @@
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  background: #0b1020;
+  color: #e8ecff;
+}
+
+button {
+  border: 1px solid #1b2235;
+  background: #0f1630;
+  color: #e8ecff;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #172242;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+select, input {
+  background: #0f1630;
+  color: #e8ecff;
+  border: 1px solid #1b2235;
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.app {
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto 1fr;
+}
+
+.header {
+  padding: 10px 12px;
+  border-bottom: 1px solid #1b2235;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.viewer {
+  min-height: 0;
+}
