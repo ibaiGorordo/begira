@@ -2,6 +2,9 @@
 
 Minimal point-cloud viewer (Three.js + React) with a Python API.
 
+<img width="2154" height="1190" alt="image" src="https://github.com/user-attachments/assets/52a2d0f2-d8a2-45d8-ac5f-9afaf3c9fa05" />
+
+
 ## Repo layout (recommended)
 
 - `src/begira/` → the Python library (API server + launcher)
