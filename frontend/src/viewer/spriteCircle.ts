@@ -14,18 +14,12 @@ export function getCircleSpriteTexture(): THREE.Texture {
 
   ctx.clearRect(0, 0, size, size)
 
-  // Softer circular sprite (anti-aliased). We keep the center slightly dimmer
-  // to avoid the "too bright" look when many points overlap.
+  // Hard-edged circular alpha mask.
+  // This is meant for the 'circles' render mode where we use alphaTest (opaque, no blending).
   const r = size / 2
-  const grd = ctx.createRadialGradient(r, r, 0, r, r, r)
-  grd.addColorStop(0.0, 'rgba(255,255,255,0.75)')
-  grd.addColorStop(0.6, 'rgba(255,255,255,0.65)')
-  grd.addColorStop(0.9, 'rgba(255,255,255,0.15)')
-  grd.addColorStop(1.0, 'rgba(255,255,255,0.0)')
-
-  ctx.fillStyle = grd
+  ctx.fillStyle = 'rgba(255,255,255,1.0)'
   ctx.beginPath()
-  ctx.arc(r, r, r, 0, Math.PI * 2)
+  ctx.arc(r, r, r * 0.98, 0, Math.PI * 2)
   ctx.fill()
 
   const tex = new THREE.CanvasTexture(canvas)

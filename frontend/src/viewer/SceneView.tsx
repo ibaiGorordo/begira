@@ -1,14 +1,8 @@
 import * as THREE from 'three'
-import { useMemo } from 'react'
 import { usePointCloud } from './usePointCloud'
 
 export default function SceneView({ cloudId, onPicked }: { cloudId: string; onPicked: (picked: boolean) => void }) {
   const state = usePointCloud(cloudId)
-
-  const circleMap = useMemo(() => {
-    // imported lazily to avoid circular deps
-    return null
-  }, [])
 
   if (state.status !== 'ready') return null
 
@@ -26,12 +20,13 @@ export default function SceneView({ cloudId, onPicked }: { cloudId: string; onPi
         size={Math.max(0.001, state.meta.pointSize ?? 0.02)}
         sizeAttenuation
         vertexColors={state.decoded.hasColor}
-        transparent
-        opacity={0.6}
-        depthWrite={false}
-        blending={THREE.NormalBlending}
+        // Fast/opaque defaults for large clouds.
+        transparent={false}
+        opacity={1.0}
+        depthWrite={true}
+        depthTest
+        blending={THREE.NoBlending}
       />
     </points>
   )
 }
-

@@ -3,7 +3,7 @@ import { OrbitControls } from '@react-three/drei'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from 'react'
 import * as THREE from 'three'
 import WASDControls from './WASDControls'
-import MultiPointCloudScene from './MultiPointCloudScene'
+import MultiPointCloudScene, { PointCloudRenderMode } from './MultiPointCloudScene'
 import {
   createClickGesture,
   isClickGesture,
@@ -12,6 +12,7 @@ import {
   onPointerUpGesture,
 } from './interaction'
 import { usePointCloud } from './usePointCloud'
+import DebugOverlay, { isDebugOverlayEnabledFromUrl } from './DebugOverlay'
 
 function fitCameraToBounds(
   camera: THREE.PerspectiveCamera,
@@ -119,12 +120,6 @@ function useSceneBounds(): {
   }
 }
 
-// Local helper: avoid depending on module export resolution for isDoubleClick
-function isDoubleClickLocal(nowMs: number, lastClickMs: number | null, maxGapMs = 350): boolean {
-  if (lastClickMs === null) return false
-  return nowMs - lastClickMs <= maxGapMs
-}
-
 export default function PointCloudCanvas({
   cloudIds,
   selectedId,
@@ -141,6 +136,38 @@ export default function PointCloudCanvas({
   cloudMetaBounds: { min: [number, number, number]; max: [number, number, number] }[]
 }) {
   const background = useMemo(() => new THREE.Color('#0b1020'), [])
+
+  // Debug overlay state:
+  // - initial value from URL: ?debug=1
+  // - toggle at runtime with the '`' (backtick) key
+  const [debugOverlayEnabled, setDebugOverlayEnabled] = useState(() => isDebugOverlayEnabledFromUrl())
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      // Avoid toggling while typing in inputs.
+      const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase()
+      if (tag === 'input' || tag === 'textarea' || (e.target as HTMLElement | null)?.isContentEditable) return
+
+      if (e.key === '`') {
+        setDebugOverlayEnabled((v) => !v)
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+    }
+  }, [])
+
+  // Rendering mode:
+  // - fast: squares (fastest)
+  // - circles: circle sprite + alphaTest (still fast)
+  // - quality: blended sprites (slowest)
+  const [renderMode] = useState<PointCloudRenderMode>(() => {
+    const v = new URLSearchParams(window.location.search).get('mode')
+    if (v === 'fast' || v === 'circles' || v === 'quality') return v
+    return 'circles'
+  })
 
   const [controlsReady, setControlsReady] = useState(false)
   const orbitRef = useRef<any>(null)
@@ -249,12 +276,13 @@ export default function PointCloudCanvas({
     return scene.bounds
   }, [cloudIds, cloudMetaBounds, firstCloudId, firstDecodedBounds, focusId, scene.bounds])
 
-  const lastSceneClickMs = useRef<number | null>(null)
   const canvasGesture = useRef(createClickGesture())
 
   return (
     <Canvas
       camera={{ fov: 60, near: 0.01, far: 1000, position: [2.5, 2.0, 2.5] }}
+      // Cap DPR to reduce fragment cost on dense clusters.
+      dpr={[1, 1.5]}
       onCreated={({ gl, camera }) => {
         gl.setClearColor(background)
         ;(camera as unknown as { controls?: any }).controls = undefined
@@ -276,6 +304,9 @@ export default function PointCloudCanvas({
         onSelect(null)
       }}
     >
+      {/* Debug overlay: URL ?debug=1 or press '`' */}
+      <DebugOverlay enabled={debugOverlayEnabled} />
+
       <ambientLight intensity={0.6} />
       <directionalLight position={[5, 8, 5]} intensity={0.8} />
 
@@ -286,6 +317,7 @@ export default function PointCloudCanvas({
       <MultiPointCloudScene
         cloudIds={cloudIds}
         selectedId={selectedId}
+        renderMode={renderMode}
         onSelect={(id) => {
           // Selecting should not refit camera.
           onSelect(id)

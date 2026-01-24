@@ -3,6 +3,11 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
+  // Build directly into the Python package so `begira` can serve it without an extra sync step.
+  build: {
+    outDir: '../src/begira/_frontend/dist',
+    emptyOutDir: true,
+  },
   server: {
     proxy: {
       '/api': {

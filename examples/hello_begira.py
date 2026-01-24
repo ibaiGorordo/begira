@@ -1,20 +1,16 @@
 import time
-import numpy as np
+from pathlib import Path
+
 import begira
+from begira.ply import load_ply_gaussians
 
 
 def main() -> None:
-    server = begira.run(port=0, open_browser=True)
+    client = begira.run(port=57792)
 
-    n = 5000
-    points1 = np.random.uniform(-1, 1, size=(n, 3)).astype(np.float32)
-    server.log_points("points1", points1)
-
-
-    points2 = np.random.randn(n, 3).astype(np.float32)
-    points2 /= np.linalg.norm(points2, axis=1, keepdims=True)
-
-    server.log_points("points2", points2, point_size=0.08)
+    assets_dir = Path(__file__).resolve().parent / "assets"
+    gs0 = load_ply_gaussians(str(assets_dir / "object_0.ply"))
+    client.log_points("gaussians0", gs0.positions*3, gs0.colors_rgb8)
 
     try:
         while True:
