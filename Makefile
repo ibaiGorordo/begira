@@ -1,4 +1,4 @@
-.PHONY: help py-install web-install web-build dev-backend dev-frontend run
+.PHONY: help py-install web-install web-build dev-backend dev-frontend run build
 
 help:
 	@echo "Targets:"
@@ -8,6 +8,7 @@ help:
 	@echo "  run            One-command run: build web + start begira"
 	@echo "  dev-backend    Run backend only (reload)"
 	@echo "  dev-frontend   Run frontend dev server"
+	@echo "  build          Build frontend and Python distribution"
 
 py-install:
 	python -m pip install -e .
@@ -27,3 +28,6 @@ dev-backend:
 dev-frontend:
 	cd frontend && npm run dev
 
+build: web-build
+	python -m pip install --upgrade build
+	python -m build

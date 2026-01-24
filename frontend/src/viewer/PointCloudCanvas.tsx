@@ -3,7 +3,7 @@ import { OrbitControls } from '@react-three/drei'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from 'react'
 import * as THREE from 'three'
 import WASDControls from './WASDControls'
-import MultiPointCloudScene from './multipointcloudscene'
+import MultiPointCloudScene from './MultiPointCloudScene'
 import {
   createClickGesture,
   isClickGesture,

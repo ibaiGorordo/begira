@@ -3,11 +3,22 @@ name = "begira"
 version = "0.1.0"
 description = "Add your description here"
 requires-python = ">=3.11"
+readme = "README.md"
+authors = [ { name = "" } ]
 dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
     "numpy>=1.26",
 ]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+begira = "begira.__main__:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
@@ -15,6 +26,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+include-package-data = true
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.setuptools.package-data]
+"begira._frontend" = ["dist/**"]

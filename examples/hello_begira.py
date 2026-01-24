@@ -6,10 +6,11 @@ import begira
 def main() -> None:
     server = begira.run(port=0, open_browser=True)
 
-    points1 = np.random.uniform(-1, 1, size=(5000, 3)).astype(np.float32)
+    n = 5000
+    points1 = np.random.uniform(-1, 1, size=(n, 3)).astype(np.float32)
     server.log_points("points1", points1)
 
-    n = 5000
+
     points2 = np.random.randn(n, 3).astype(np.float32)
     points2 /= np.linalg.norm(points2, axis=1, keepdims=True)
 
