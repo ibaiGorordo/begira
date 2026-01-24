@@ -26,7 +26,7 @@ export default function WASDControls({ enabled, speed = 2 }: { enabled: boolean;
 
   const forward = useMemo(() => new THREE.Vector3(), [])
   const right = useMemo(() => new THREE.Vector3(), [])
-  const up = useMemo(() => new THREE.Vector3(0, 1, 0), [])
+  const up = useMemo(() => new THREE.Vector3(), [])
   const move = useMemo(() => new THREE.Vector3(), [])
 
   useEffect(() => {
@@ -83,6 +83,12 @@ export default function WASDControls({ enabled, speed = 2 }: { enabled: boolean;
     const actualSpeed = (k.shift ? 4 : 1) * speed * distScale
 
     camera.getWorldDirection(forward)
+
+    // Respect the configured up axis (e.g. Z-up) by using camera.up.
+    up.copy((camera as THREE.Camera).up)
+    if (up.lengthSq() === 0) up.set(0, 1, 0)
+    up.normalize()
+
     right.copy(forward).cross(up).normalize()
 
     move.set(0, 0, 0)

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from .conventions import CoordinateConvention
+
 
 class BegiraClient:
     """HTTP client for logging point clouds to a running begira server.
@@ -19,6 +21,50 @@ class BegiraClient:
 
     def __init__(self, base_url: str = "http://127.0.0.1:8000") -> None:
         self.base_url = base_url.rstrip("/")
+
+    def get_coordinate_convention(self, *, timeout_s: float = 10.0) -> CoordinateConvention:
+        """Return the active viewer coordinate convention.
+
+        Values:
+          - 'rh-y-up'
+          - 'rh-z-up'
+        """
+        import httpx
+
+        with httpx.Client(base_url=self.base_url, timeout=timeout_s) as client:
+            res = client.get("/api/viewer/settings")
+            if res.status_code >= 400:
+                raise RuntimeError(f"Failed to get viewer settings: {res.status_code} {res.text}")
+            data = res.json()
+            return CoordinateConvention.from_any(str(data.get("coordinateConvention") or ""))
+
+    def set_coordinate_convention(self, convention: str | CoordinateConvention, *, timeout_s: float = 10.0) -> None:
+        """Set the viewer coordinate convention.
+
+        You can pass either a CoordinateConvention enum value or a string alias.
+
+        Examples:
+            client.set_coordinate_convention(CoordinateConvention.Z_UP)
+            client.set_coordinate_convention('z-up')
+        """
+        import httpx
+
+        conv = CoordinateConvention.from_any(convention)
+
+        with httpx.Client(base_url=self.base_url, timeout=timeout_s) as client:
+            res = client.patch("/api/viewer/settings", json={"coordinateConvention": conv.value})
+            if res.status_code >= 400:
+                raise RuntimeError(f"Failed to update viewer settings: {res.status_code} {res.text}")
+
+    def get_viewer_settings(self, *, timeout_s: float = 10.0) -> dict:
+        """Return the raw viewer settings payload from the server."""
+        import httpx
+
+        with httpx.Client(base_url=self.base_url, timeout=timeout_s) as client:
+            res = client.get("/api/viewer/settings")
+            if res.status_code >= 400:
+                raise RuntimeError(f"Failed to get viewer settings: {res.status_code} {res.text}")
+            return dict(res.json())
 
     def log_points(
         self,

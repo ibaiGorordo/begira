@@ -22,8 +22,7 @@ export function decodePointCloud(meta: PointCloudMeta, buf: ArrayBuffer): Decode
   const hasColor = Boolean(meta.schema.color)
 
   const positions = new Float32Array(pointCount * 3)
-  let colors: Uint8Array | null = null
-  if (hasColor) colors = new Uint8Array(pointCount * 3)
+  const colors = hasColor ? new Uint8Array(pointCount * 3) : null
 
   // Fast path: positions-only payload is already tightly packed as float32.
   if (!hasColor && bytesPerPoint === 12) {
@@ -34,6 +33,7 @@ export function decodePointCloud(meta: PointCloudMeta, buf: ArrayBuffer): Decode
     const dv = new DataView(buf)
     const bytes = new Uint8Array(buf)
 
+    // hasColor implies colors is allocated in this branch
     for (let i = 0; i < pointCount; i++) {
       const base = i * 15
       const dst = i * 3
@@ -66,9 +66,24 @@ export function decodePointCloud(meta: PointCloudMeta, buf: ArrayBuffer): Decode
     }
   }
 
+  function srgbToLinear(u: number) {
+    // u in [0,1]
+    return u <= 0.04045 ? u / 12.92 : Math.pow((u + 0.055) / 1.055, 2.4)
+  }
+
   const geometry = new THREE.BufferGeometry()
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-  if (colors) geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3, true))
+
+  if (colors) {
+    // colorsUint8: Uint8Array length = N*3
+    const out = new Float32Array(colors.length)
+    for (let i = 0; i < colors.length; i++) {
+      const u = colors[i] / 255
+      out[i] = srgbToLinear(u)
+    }
+
+    geometry.setAttribute('color', new THREE.BufferAttribute(out, 3))
+  }
 
   geometry.computeBoundingSphere()
 

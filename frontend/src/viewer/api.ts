@@ -29,6 +29,10 @@ export type Events = {
   globalRevision: number
 }
 
+export type ViewerSettings = {
+  coordinateConvention?: string
+}
+
 export type UpdatePointCloudSettingsRequest = {
   pointSize?: number
 }
@@ -64,4 +68,10 @@ export async function updatePointCloudSettings(cloudId: string, req: UpdatePoint
     body: JSON.stringify(req),
   })
   if (!res.ok) throw new Error(`Failed to update settings: ${res.status} ${res.statusText}`)
+}
+
+export async function fetchViewerSettings(): Promise<ViewerSettings> {
+  const res = await fetch('/api/viewer/settings')
+  if (!res.ok) throw new Error(`Failed to get viewer settings: ${res.status} ${res.statusText}`)
+  return (await res.json()) as ViewerSettings
 }

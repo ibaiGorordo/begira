@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import Response
 
 from .registry import REGISTRY
+from .viewer_settings import VIEWER_SETTINGS
 
 
 def _generate_sample_pointcloud(n: int = 200_000, seed: int = 0) -> tuple[np.ndarray, np.ndarray]:
@@ -319,5 +320,30 @@ def create_api_app() -> FastAPI:
         )
 
         return {"ok": True, "id": pc.id, "revision": int(pc.revision), "pointCount": int(pc.positions.shape[0])}
+
+    @app.get("/api/viewer/settings")
+    def get_viewer_settings() -> dict:
+        s = VIEWER_SETTINGS.get()
+        return {"coordinateConvention": s.coordinate_convention}
+
+    @app.patch("/api/viewer/settings")
+    def update_viewer_settings(body: dict) -> dict:
+        # Supported:
+        # - coordinateConvention: 'rh-y-up' | 'rh-z-up'
+        updated = VIEWER_SETTINGS.get()
+
+        if "coordinateConvention" in body:
+            try:
+                updated = VIEWER_SETTINGS.set_coordinate_convention(body.get("coordinateConvention"))
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+
+        if "coordinateConvention" not in body:
+            raise HTTPException(status_code=400, detail="Missing field: coordinateConvention")
+
+        return {
+            "ok": True,
+            "coordinateConvention": updated.coordinate_convention,
+        }
 
     return app

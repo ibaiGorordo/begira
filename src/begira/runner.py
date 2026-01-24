@@ -12,6 +12,7 @@ import numpy as np
 import uvicorn
 
 from .client import BegiraClient
+from .conventions import CoordinateConvention
 from .registry import REGISTRY
 from .server import create_app
 
@@ -21,6 +22,18 @@ class BegiraServer:
     host: str
     port: int
     url: str
+
+    def _as_client(self) -> BegiraClient:
+        # Reuse HTTP endpoints for any "viewer settings" behavior.
+        return BegiraClient(self.url.rstrip("/"))
+
+    def get_coordinate_convention(self, *, timeout_s: float = 10.0) -> CoordinateConvention:
+        """Return the active viewer coordinate convention for this server."""
+        return self._as_client().get_coordinate_convention(timeout_s=timeout_s)
+
+    def set_coordinate_convention(self, convention: str | CoordinateConvention, *, timeout_s: float = 10.0) -> None:
+        """Set the viewer coordinate convention for this server."""
+        self._as_client().set_coordinate_convention(convention, timeout_s=timeout_s)
 
     def log_points(
         self,
@@ -89,6 +102,10 @@ class BegiraServer:
             cloud_id=cloud_id,
             point_size=point_size,
         )
+
+    def get_viewer_settings(self, *, timeout_s: float = 10.0) -> dict:
+        """Return the active viewer settings for this server."""
+        return self._as_client().get_viewer_settings(timeout_s=timeout_s)
 
 
 def _find_free_port(host: str) -> int:

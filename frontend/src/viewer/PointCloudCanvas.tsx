@@ -13,11 +13,39 @@ import {
 } from './interaction'
 import { usePointCloud } from './usePointCloud'
 import DebugOverlay, { isDebugOverlayEnabledFromUrl } from './DebugOverlay'
+import { getCoordinateConvention, parseCoordinateConventionFromUrl, type CoordinateConventionId } from './coordinateConventions'
+import { fetchViewerSettings } from './api'
+
+type Bounds3 = { min: THREE.Vector3; max: THREE.Vector3 }
+
+// Viewer-space is always Three.js native Y-up.
+const VIEW_UP = new THREE.Vector3(0, 1, 0)
+
+function transformBounds(bounds: Bounds3, q: THREE.Quaternion): Bounds3 {
+  const corners: THREE.Vector3[] = []
+  const { min, max } = bounds
+  for (const x of [min.x, max.x]) {
+    for (const y of [min.y, max.y]) {
+      for (const z of [min.z, max.z]) {
+        corners.push(new THREE.Vector3(x, y, z).applyQuaternion(q))
+      }
+    }
+  }
+
+  const outMin = new THREE.Vector3(Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY)
+  const outMax = new THREE.Vector3(Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY)
+  for (const c of corners) {
+    outMin.min(c)
+    outMax.max(c)
+  }
+  return { min: outMin, max: outMax }
+}
 
 function fitCameraToBounds(
   camera: THREE.PerspectiveCamera,
   size: { width: number; height: number },
-  bounds: { min: THREE.Vector3; max: THREE.Vector3 }
+  bounds: { min: THREE.Vector3; max: THREE.Vector3 },
+  opts?: { up?: THREE.Vector3; forward?: THREE.Vector3; topDown?: boolean }
 ) {
   const center = bounds.min.clone().add(bounds.max).multiplyScalar(0.5)
   const bboxSize = bounds.max.clone().sub(bounds.min)
@@ -32,13 +60,25 @@ function fitCameraToBounds(
 
   const distX = halfX / Math.tan(hFov / 2)
   const distY = halfY / Math.tan(vFov / 2)
-
   const baseDist = Math.max(distX, distY, halfZ)
 
-  // Slightly larger default margin than before; point clouds often look best a bit more zoomed out.
   const distance = (baseDist || 1) * 1.4
 
-  const dir = new THREE.Vector3(1, 0.85, 1).normalize()
+  const up = (opts?.up?.clone() ?? new THREE.Vector3(0, 1, 0)).normalize()
+  if (up.lengthSq() === 0) up.set(0, 1, 0).normalize()
+
+  const forwardSeed = opts?.forward?.clone() ?? new THREE.Vector3(0, 0, 1)
+  const fwd = forwardSeed.lengthSq() === 0 ? new THREE.Vector3(0, 0, 1) : forwardSeed.normalize()
+  if (Math.abs(fwd.dot(up)) > 0.95) fwd.set(1, 0, 0)
+
+  const side = new THREE.Vector3().crossVectors(up, fwd).normalize()
+  const forward = new THREE.Vector3().crossVectors(side, up).normalize()
+
+  const topDown = opts?.topDown === true
+  const dir = topDown
+    ? up.clone()
+    : forward.clone().add(up.clone().multiplyScalar(0.45)).add(side.clone().multiplyScalar(0.85)).normalize()
+
   camera.position.copy(center.clone().add(dir.multiplyScalar(distance)))
   camera.near = Math.max(0.001, distance / 1000)
   camera.far = distance * 2000
@@ -51,24 +91,29 @@ function fitCameraToBounds(
 function FrameCamera({
   bounds,
   focusToken,
+  forward,
+  topDown,
 }: {
   bounds: { min: THREE.Vector3; max: THREE.Vector3 } | null
   focusToken: number
+  forward: THREE.Vector3
+  topDown: boolean
 }) {
   const { camera, size } = useThree()
 
-  // Fit only on explicit focus requests.
   useLayoutEffect(() => {
     if (!bounds) return
-
-    // Avoid fitting against a transient 0-sized canvas (common during initial layout).
     if (!Number.isFinite(size.width) || !Number.isFinite(size.height) || size.width <= 1 || size.height <= 1) return
 
     const handle = requestAnimationFrame(() => {
       const perspective = camera as THREE.PerspectiveCamera
-      const { center } = fitCameraToBounds(perspective, size, bounds)
+      const { center } = fitCameraToBounds(perspective, size, bounds, {
+        up: (camera as THREE.Camera).up,
+        forward,
+        topDown,
+      })
 
-      const anyCam = camera as unknown as { controls?: { target: THREE.Vector3; update: () => void }; userData?: any }
+      const anyCam = camera as unknown as { controls?: { target: THREE.Vector3; update: () => void } }
       if (anyCam.controls) {
         anyCam.controls.target.copy(center)
         anyCam.controls.update()
@@ -79,8 +124,7 @@ function FrameCamera({
     })
 
     return () => cancelAnimationFrame(handle)
-    // IMPORTANT: don't depend on bounds here; focusToken is the sole trigger.
-  }, [camera, focusToken, size.height, size.width])
+  }, [camera, focusToken, size.height, size.width, forward, topDown, bounds])
 
   return null
 }
@@ -90,16 +134,13 @@ function useSceneBounds(): {
   setBoundsFromMeta: (metaBounds: { min: [number, number, number]; max: [number, number, number] }[]) => void
 } {
   const api = useMemo(() => {
-    const state: {
-      bounds: { min: THREE.Vector3; max: THREE.Vector3 } | null
-    } = { bounds: null }
+    const state: { bounds: { min: THREE.Vector3; max: THREE.Vector3 } | null } = { bounds: null }
 
     const setBoundsFromMeta = (all: { min: [number, number, number]; max: [number, number, number] }[]) => {
       if (all.length === 0) {
         state.bounds = null
         return
       }
-
       const min = new THREE.Vector3(Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY)
       const max = new THREE.Vector3(Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY)
 
@@ -107,17 +148,13 @@ function useSceneBounds(): {
         min.min(new THREE.Vector3(...b.min))
         max.max(new THREE.Vector3(...b.max))
       }
-
       state.bounds = { min, max }
     }
 
     return { state, setBoundsFromMeta }
   }, [])
 
-  return {
-    bounds: api.state.bounds,
-    setBoundsFromMeta: api.setBoundsFromMeta,
-  }
+  return { bounds: api.state.bounds, setBoundsFromMeta: api.setBoundsFromMeta }
 }
 
 export default function PointCloudCanvas({
@@ -137,76 +174,87 @@ export default function PointCloudCanvas({
 }) {
   const background = useMemo(() => new THREE.Color('#0b1020'), [])
 
-  // Debug overlay state:
-  // - initial value from URL: ?debug=1
-  // - toggle at runtime with the '`' (backtick) key
-  const [debugOverlayEnabled, setDebugOverlayEnabled] = useState(() => isDebugOverlayEnabledFromUrl())
+  const [conventionId, setConventionId] = useState<CoordinateConventionId>(() => {
+    return parseCoordinateConventionFromUrl(window.location.search) ?? 'rh-z-up'
+  })
 
+  // Read settings once on mount (URL wins). If you change server settings at runtime, you must reload.
   useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      // Avoid toggling while typing in inputs.
-      const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase()
-      if (tag === 'input' || tag === 'textarea' || (e.target as HTMLElement | null)?.isContentEditable) return
-
-      if (e.key === '`') {
-        setDebugOverlayEnabled((v) => !v)
-      }
+    const urlOverride = parseCoordinateConventionFromUrl(window.location.search)
+    if (urlOverride) {
+      setConventionId(urlOverride)
+      return
     }
 
-    window.addEventListener('keydown', onKeyDown)
+    let cancelled = false
+    fetchViewerSettings()
+      .then((s) => {
+        if (cancelled) return
+        if (s.coordinateConvention === 'rh-y-up' || s.coordinateConvention === 'rh-z-up') {
+          setConventionId(s.coordinateConvention)
+        }
+      })
+      .catch(() => {
+        /* ignore */
+      })
+
     return () => {
-      window.removeEventListener('keydown', onKeyDown)
+      cancelled = true
     }
   }, [])
 
+  const convention = useMemo(() => getCoordinateConvention(conventionId), [conventionId])
+
+  // Debug overlay:
+  const [debugOverlayEnabled, setDebugOverlayEnabled] = useState(() => isDebugOverlayEnabledFromUrl())
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase()
+      if (tag === 'input' || tag === 'textarea' || (e.target as HTMLElement | null)?.isContentEditable) return
+      if (e.key === '`') setDebugOverlayEnabled((v) => !v)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
+
   // Rendering mode:
-  // - fast: squares (fastest)
-  // - circles: circle sprite + alphaTest (still fast)
-  // - quality: blended sprites (slowest)
   const [renderMode] = useState<PointCloudRenderMode>(() => {
     const v = new URLSearchParams(window.location.search).get('mode')
     if (v === 'fast' || v === 'circles' || v === 'quality') return v
     return 'circles'
   })
 
-  const [controlsReady, setControlsReady] = useState(false)
   const orbitRef = useRef<any>(null)
+  const [controlsReady, setControlsReady] = useState(false)
 
-  // Camera focus target (what we want to frame). Default is the first cloud.
+  // Focus:
   const [focusId, setFocusId] = useState<string | null>(null)
   const focusIdRef = useRef<string | null>(null)
   useEffect(() => {
     focusIdRef.current = focusId
   }, [focusId])
 
-  // Instead of a boolean auto-frame flag (which can be accidentally re-enabled),
-  // use a monotonically increasing token: bump it only for explicit focus requests.
   const [focusToken, setFocusToken] = useState(0)
-
   const bumpFocus = useCallback((source?: string) => {
     setFocusToken((t) => {
-      const next = t + 1
-      // Debug logging for focus token bumps was useful during development but is noisy in production.
-      // Keep the source parameter for potential future debugging.
       void source
-      return next
+      return t + 1
     })
   }, [])
 
-  // Keep OrbitControls -> focus interaction wiring.
+  // IMPORTANT: refit whenever convention changes.
   useEffect(() => {
-    const ctrl = orbitRef.current
-    if (!ctrl) return
+    if (cloudIds.length === 0) return
+    bumpFocus('convention-change')
+  }, [conventionId, cloudIds.length, bumpFocus])
 
-    // Any manual orbiting means we should NOT refit unless explicitly requested.
-    const onStart = () => {
-      /* no-op: having this listener makes it easy to extend if needed */
-    }
-    ctrl.addEventListener('start', onStart)
-    return () => {
-      ctrl.removeEventListener('start', onStart)
-    }
-  }, [controlsReady])
+  // Choose a forward direction that makes the change visible.
+  const viewForward = useMemo(() => {
+    if (conventionId === 'rh-y-up') return new THREE.Vector3(0, 0, -1)
+    return new THREE.Vector3(0, 0, 1)
+  }, [conventionId])
+
+  const topDownOnFocus = false
 
   // Initialize focus when clouds first appear.
   const prevCloudCount = useRef(0)
@@ -219,21 +267,19 @@ export default function PointCloudCanvas({
       return
     }
 
-    // First cloud appears at startup.
     if (prev === 0 && cloudIds.length > 0) {
       setFocusId(cloudIds[0])
       bumpFocus('startup:first-cloud')
       return
     }
 
-    // If focused cloud disappeared, fall back to first.
     setFocusId((cur) => {
       if (!cur) return cloudIds[0]
       return cloudIds.includes(cur) ? cur : cloudIds[0]
     })
-  }, [cloudIds])
+  }, [cloudIds, bumpFocus])
 
-  // External focus request (e.g. hierarchy double-click): focus that cloud.
+  // External focus request:
   useEffect(() => {
     if (!focusTarget) return
     if (!cloudIds.includes(focusTarget)) return
@@ -243,12 +289,10 @@ export default function PointCloudCanvas({
       setFocusId(focusTarget)
       bumpFocus('effect:focusTarget')
     }
-
-    // Consume the focus request so it doesn't keep re-triggering on every rerender.
     onFocus(null)
   }, [cloudIds, focusTarget, bumpFocus, onFocus])
 
-  // Load first cloud to obtain decoded bounds for initial framing.
+  // First cloud decoded bounds:
   const firstCloudId = cloudIds[0] ?? ''
   const firstCloudState = usePointCloud(firstCloudId)
   const firstDecodedBounds = useMemo(() => {
@@ -256,102 +300,119 @@ export default function PointCloudCanvas({
     return firstCloudState.decoded.bounds
   }, [firstCloudState])
 
-  // Scene aggregate bounds derived from meta bounds.
+  // Scene bounds from meta:
   const scene = useSceneBounds()
   useEffect(() => {
     scene.setBoundsFromMeta(cloudMetaBounds)
   }, [cloudMetaBounds, scene])
 
   const focusBounds = useMemo(() => {
-    if (!focusId) return scene.bounds
+    let b: Bounds3 | null = null
 
-    if (focusId === firstCloudId && firstDecodedBounds) return firstDecodedBounds
-
-    const idx = cloudIds.findIndex((x) => x === focusId)
-    if (idx >= 0) {
-      const b = cloudMetaBounds[idx]
-      if (b) return { min: new THREE.Vector3(...b.min), max: new THREE.Vector3(...b.max) }
+    if (!focusId) b = scene.bounds
+    else if (focusId === firstCloudId && firstDecodedBounds) b = firstDecodedBounds
+    else {
+      const idx = cloudIds.findIndex((x) => x === focusId)
+      if (idx >= 0) {
+        const mb = cloudMetaBounds[idx]
+        if (mb) b = { min: new THREE.Vector3(...mb.min), max: new THREE.Vector3(...mb.max) }
+      }
+      if (!b) b = scene.bounds
     }
 
-    return scene.bounds
-  }, [cloudIds, cloudMetaBounds, firstCloudId, firstDecodedBounds, focusId, scene.bounds])
+    if (!b) return null
+    return transformBounds(b, convention.worldToView)
+  }, [cloudIds, cloudMetaBounds, convention.worldToView, firstCloudId, firstDecodedBounds, focusId, scene.bounds])
 
   const canvasGesture = useRef(createClickGesture())
 
   return (
     <Canvas
+      key={conventionId}
       camera={{ fov: 60, near: 0.01, far: 1000, position: [2.5, 2.0, 2.5] }}
-      // Cap DPR to reduce fragment cost on dense clusters.
       dpr={[1, 1.5]}
       onCreated={({ gl, camera }) => {
-        gl.setClearColor(background)
+        gl.setClearColor(background, 1)
+        gl.autoClear = true
+
+        gl.outputColorSpace = THREE.SRGBColorSpace
+        gl.toneMapping = THREE.NoToneMapping
+        gl.toneMappingExposure = 1.0
+
         ;(camera as unknown as { controls?: any }).controls = undefined
         ;(camera as any).userData = (camera as any).userData ?? {}
         ;(camera as any).userData.pendingOrbitTarget = null
+
+        // ALWAYS keep Three.js native up for camera/controls
+        ;(camera as THREE.Camera).up.copy(VIEW_UP)
       }}
-      onPointerDown={(e) => {
-        onPointerDownGesture(canvasGesture.current, e.nativeEvent)
-      }}
-      onPointerMove={(e) => {
-        onPointerMoveGesture(canvasGesture.current, e.nativeEvent)
-      }}
+      onPointerDown={(e) => onPointerDownGesture(canvasGesture.current, e.nativeEvent)}
+      onPointerMove={(e) => onPointerMoveGesture(canvasGesture.current, e.nativeEvent)}
       onPointerUp={(e) => {
         const wasClick = isClickGesture(canvasGesture.current, e.nativeEvent)
         onPointerUpGesture(canvasGesture.current)
         if (!wasClick) return
-
-        // Single click on empty space clears selection but must NOT re-center the camera.
         onSelect(null)
       }}
     >
-      {/* Debug overlay: URL ?debug=1 or press '`' */}
       <DebugOverlay enabled={debugOverlayEnabled} />
 
       <ambientLight intensity={0.6} />
       <directionalLight position={[5, 8, 5]} intensity={0.8} />
 
-      {controlsReady && <FrameCamera bounds={focusBounds} focusToken={focusToken} />}
+      {controlsReady && (
+        <FrameCamera bounds={focusBounds} focusToken={focusToken} forward={viewForward} topDown={topDownOnFocus} />
+      )}
 
       <WASDControls enabled speed={2.0} />
 
-      <MultiPointCloudScene
-        cloudIds={cloudIds}
-        selectedId={selectedId}
-        renderMode={renderMode}
-        onSelect={(id) => {
-          // Selecting should not refit camera.
-          onSelect(id)
-        }}
-        onFocus={(id) => {
-          // Explicit focus only (double-click on a cloud).
-          const prev = focusIdRef.current
-          if (prev !== id) {
-            setFocusId(id)
-            bumpFocus('cloud:doubleclick-focus')
-          }
-          onFocus(id)
-        }}
-      />
-
+      {/* Viewer-space grid */}
       <gridHelper args={[10, 10, '#29324a', '#1b2235']} />
+
+      {/* World rotated per convention */}
+      <group key={conventionId} quaternion={convention.worldToView}>
+        <axesHelper args={[1.5]} />
+        <MultiPointCloudScene
+          cloudIds={cloudIds}
+          selectedId={selectedId}
+          renderMode={renderMode}
+          onSelect={(id) => onSelect(id)}
+          onFocus={(id) => {
+            const prev = focusIdRef.current
+            if (prev !== id) {
+              setFocusId(id)
+              bumpFocus('cloud:doubleclick-focus')
+            }
+            onFocus(id)
+          }}
+        />
+      </group>
+
       <OrbitControls
+        key={conventionId}
         makeDefault
+        minPolarAngle={0}
+        maxPolarAngle={Math.PI}
+        minDistance={0}
+        maxDistance={Infinity}
+        enableDamping
+        dampingFactor={0.07}
         ref={(ctrl) => {
           orbitRef.current = ctrl
           if (!ctrl) return
 
           const cam = (ctrl as any)?.object
-          if (!cam) return
+          if (cam) {
+            ;(cam as THREE.Camera).up.copy(VIEW_UP)
+            ;(cam as any).controls = ctrl
 
-          ;(cam as any).controls = ctrl
-
-          const pending = (cam as any).userData?.pendingOrbitTarget as THREE.Vector3 | null | undefined
-          if (pending) {
-            ctrl.target.copy(pending)
-            ctrl.update()
-            ;(cam as any).userData.pendingOrbitTarget = null
+            const pending = (cam as any).userData?.pendingOrbitTarget as THREE.Vector3 | null | undefined
+            if (pending) {
+              ctrl.target.copy(pending)
+              ctrl.update()
+              ;(cam as any).userData.pendingOrbitTarget = null
+            }
           }
-
           setControlsReady(true)
         }}
       />
