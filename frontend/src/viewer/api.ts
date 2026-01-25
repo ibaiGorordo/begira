@@ -1,4 +1,4 @@
-export type ElementType = 'pointcloud'
+export type ElementType = 'pointcloud' | 'gaussians'
 
 export type ElementInfo = {
   id: string
@@ -26,6 +26,26 @@ export type PointCloudElementMeta = {
     color?: { type: 'uint8'; components: 3; normalized: true }
   }
   payloads: { points: { url: string; contentType: string } }
+}
+
+export type GaussianSplatElementMeta = {
+  id: string
+  type: 'gaussians'
+  name: string
+  revision: number
+  count: number
+  pointSize: number
+  bounds: { min: [number, number, number]; max: [number, number, number] }
+  endianness: 'little' | 'big'
+  bytesPerGaussian: number
+  schema: {
+    position: { type: 'float32'; components: 3 }
+    sh0: { type: 'float32'; components: 3 }
+    opacity: { type: 'float32'; components: 1 }
+    scale: { type: 'float32'; components: 3 }
+    rotation: { type: 'float32'; components: 4 }
+  }
+  payloads: { gaussians: { url: string; contentType: string } }
 }
 
 export type Events = {
@@ -61,6 +81,12 @@ export async function fetchElementMeta(elementId: string): Promise<any> {
 export async function fetchPointCloudElementMeta(elementId: string): Promise<PointCloudElementMeta> {
   const meta = (await fetchElementMeta(elementId)) as PointCloudElementMeta
   if (meta.type !== 'pointcloud') throw new Error(`Element ${elementId} is not a pointcloud (type=${(meta as any).type})`)
+  return meta
+}
+
+export async function fetchGaussianElementMeta(elementId: string): Promise<GaussianSplatElementMeta> {
+  const meta = (await fetchElementMeta(elementId)) as GaussianSplatElementMeta
+  if (meta.type !== 'gaussians') throw new Error(`Element ${elementId} is not a gaussians (type=${(meta as any).type})`)
   return meta
 }
 

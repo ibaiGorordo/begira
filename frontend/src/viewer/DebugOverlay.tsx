@@ -151,6 +151,38 @@ export default function DebugOverlay({ enabled }: { enabled: boolean }) {
     setStats(next)
   })
 
+  // LOD stats state (updated along with renderer stats)
+  const [lodCounts, setLodCounts] = useState<{ high: number; medium: number; low: number }>({ high: 0, medium: 0, low: 0 })
+  const [globalOverride, setGlobalOverride] = useState<string | undefined>((window as any).__begira_lod_override_global)
+  // helper to fetch LOD table from window
+  const sampleLodStatus = () => {
+    try {
+      const anyWin = window as any
+      const table = anyWin.__begira_lod_status || {}
+      let high = 0
+      let medium = 0
+      let low = 0
+      for (const k in table) {
+        const v = table[k]
+        if (v === 'high') high++
+        else if (v === 'medium') medium++
+        else low++
+      }
+      setLodCounts({ high, medium, low })
+      // keep local globalOverride state in sync with external console changes
+      setGlobalOverride((anyWin.__begira_lod_override_global as string) ?? undefined)
+    } catch {
+      setLodCounts({ high: 0, medium: 0, low: 0 })
+    }
+  }
+
+  // Also update LOD counts on the same cadence as stats
+  useFrame(() => {
+    if (!enabled) return
+    // inexpensive - call sampleLodStatus at the same 4Hz rhythm
+    sampleLodStatus()
+  })
+
   if (!enabled || !stats) return null
 
   return (
@@ -180,13 +212,71 @@ export default function DebugOverlay({ enabled }: { enabled: boolean }) {
           whiteSpace: 'pre',
         }}
       >
-        {`begira debug (toggle: press \`\` | URL: ?debug=1)
-FPS: ${stats.fps.toFixed(1)}  (${stats.ms.toFixed(2)} ms)
-Calls: ${stats.drawCalls}  Tris: ${stats.triangles}  Points: ${stats.points}  Lines: ${stats.lines}
-Geoms: ${stats.geometries}  Tex: ${stats.textures}  Programs: ${stats.programs ?? 'n/a'}
-JS heap: ${formatMB(stats.jsHeapMB)} / ${formatMB(stats.jsHeapLimitMB)}
-Renderer: ${stats.renderer}  DPR: ${stats.dpr.toFixed(2)}
-GPU: ${stats.vendor ?? 'n/a'} | ${stats.device ?? 'n/a'}`}
+        <div style={{ fontWeight: 700, marginBottom: 6 }}>begira debug (toggle: press ` | URL: ?debug=1)</div>
+        <div>FPS: {stats.fps.toFixed(1)} ({stats.ms.toFixed(2)} ms)</div>
+        <div>Calls: {stats.drawCalls}  Tris: {stats.triangles}  Points: {stats.points}  Lines: {stats.lines}</div>
+        <div>Geoms: {stats.geometries}  Tex: {stats.textures}  Programs: {stats.programs ?? 'n/a'}</div>
+        <div>JS heap: {formatMB(stats.jsHeapMB)} / {formatMB(stats.jsHeapLimitMB)}</div>
+        <div>Renderer: {stats.renderer}  DPR: {stats.dpr.toFixed(2)}</div>
+        <div>GPU: {stats.vendor ?? 'n/a'} | {stats.device ?? 'n/a'}</div>
+
+        <div style={{ marginTop: 6, display: 'flex', gap: 12, alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <span style={{ fontWeight: 600 }}>LOD counts:</span>
+            <span style={{ color: '#6ee7b7' }}>high: {lodCounts.high}</span>
+            <span style={{ color: '#facc15' }}>medium: {lodCounts.medium}</span>
+            <span style={{ color: '#f87171' }}>low: {lodCounts.low}</span>
+          </div>
+
+          <div style={{ marginLeft: 'auto', pointerEvents: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+            {/** Buttons show active state with color -- auto/high/medium/low **/}
+            {(() => {
+              const btnCommon: React.CSSProperties = { padding: '4px 8px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.06)', cursor: 'pointer', background: 'transparent', color: '#e8ecff' }
+              const makeBtn = (label: string, value: string | undefined, color?: string) => {
+                const active = globalOverride === value || (value === undefined && typeof globalOverride === 'undefined')
+                const style: React.CSSProperties = { ...btnCommon }
+                if (active) style.background = color ?? 'rgba(255,255,255,0.08)'
+                return (
+                  <button
+                    key={label}
+                    onClick={() => {
+                      try {
+                        ;(window as any).__begira_lod_override_global = value
+                      } catch {}
+                      setGlobalOverride(value)
+                    }}
+                    style={style}
+                  >
+                    {label}
+                  </button>
+                )
+              }
+
+              return (
+                <>
+                  {makeBtn('auto', undefined)}
+                  {makeBtn('high', 'high', 'rgba(110,231,183,0.18)')}
+                  {makeBtn('medium', 'medium', 'rgba(250,204,21,0.14)')}
+                  {makeBtn('low', 'low', 'rgba(248,113,113,0.14)')}
+                </>
+              )
+            })()}
+
+            <button
+              onClick={() => {
+                try {
+                  ;(window as any).__begira_lod_status = {}
+                  ;(window as any).__begira_lod_override = {}
+                  ;(window as any).__begira_lod_override_global = undefined
+                } catch {}
+                setGlobalOverride(undefined)
+              }}
+              style={{ marginLeft: 8, padding: '4px 8px', borderRadius: 6, cursor: 'pointer', background: 'transparent', color: '#e8ecff', border: '1px solid rgba(255,255,255,0.06)' }}
+            >
+              clear per-elem
+            </button>
+          </div>
+        </div>
       </div>
     </Html>
   )

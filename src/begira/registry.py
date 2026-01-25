@@ -6,7 +6,7 @@ import uuid
 
 import numpy as np
 
-from .elements import ElementBase, PointCloudElement
+from .elements import ElementBase, PointCloudElement, GaussianSplatElement
 
 
 class InMemoryRegistry:
@@ -142,6 +142,90 @@ class InMemoryRegistry:
 
             self._elements[element_id] = pc
             return pc
+
+    def update_gaussians_settings(self, element_id: str, *, point_size: float | None = None) -> GaussianSplatElement:
+        if point_size is not None and (not np.isfinite(point_size) or point_size <= 0):
+            raise ValueError("point_size must be a finite positive number")
+
+        with self._lock:
+            prev = self._elements.get(element_id)
+            if not isinstance(prev, GaussianSplatElement):
+                raise KeyError(element_id)
+
+            self._global_revision += 1
+            now = time.time()
+
+            gs = GaussianSplatElement(
+                id=prev.id,
+                type="gaussians",
+                name=prev.name,
+                positions=prev.positions,
+                sh0=prev.sh0,
+                opacity=prev.opacity,
+                scales=prev.scales,
+                rotations=prev.rotations,
+                point_size=float(point_size) if point_size is not None else prev.point_size,
+                revision=prev.revision + 1,
+                created_at=prev.created_at,
+                updated_at=now,
+            )
+            self._elements[element_id] = gs
+            return gs
+
+    def upsert_gaussians(
+        self,
+        *,
+        name: str,
+        positions: np.ndarray,
+        sh0: np.ndarray,
+        opacity: np.ndarray,
+        scales: np.ndarray,
+        rotations: np.ndarray,
+        point_size: float | None = None,
+        element_id: str | None = None,
+    ) -> GaussianSplatElement:
+        with self._lock:
+            if element_id is None:
+                element_id = uuid.uuid4().hex
+
+            self._global_revision += 1
+            now = time.time()
+            prev = self._elements.get(element_id)
+            prev_gs = prev if isinstance(prev, GaussianSplatElement) else None
+
+            if prev_gs is None:
+                gs = GaussianSplatElement(
+                    id=element_id,
+                    type="gaussians",
+                    name=name,
+                    positions=positions,
+                    sh0=sh0,
+                    opacity=opacity,
+                    scales=scales,
+                    rotations=rotations,
+                    point_size=float(point_size) if point_size is not None else 1.0,
+                    revision=1,
+                    created_at=now,
+                    updated_at=now,
+                )
+            else:
+                gs = GaussianSplatElement(
+                    id=prev_gs.id,
+                    type="gaussians",
+                    name=name,
+                    positions=positions,
+                    sh0=sh0,
+                    opacity=opacity,
+                    scales=scales,
+                    rotations=rotations,
+                    point_size=float(point_size) if point_size is not None else prev_gs.point_size,
+                    revision=prev_gs.revision + 1,
+                    created_at=prev_gs.created_at,
+                    updated_at=now,
+                )
+
+            self._elements[element_id] = gs
+            return gs
 
 
 REGISTRY = InMemoryRegistry()

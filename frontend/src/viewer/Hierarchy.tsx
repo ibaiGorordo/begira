@@ -8,7 +8,7 @@ export type HierarchyProps = {
 }
 
 export default function Hierarchy({ elements, selectedId, onSelect, onFocus }: HierarchyProps) {
-  const pointclouds = (elements ?? []).filter((e) => e.type === 'pointcloud')
+  const items = elements ?? []
 
   return (
     <div style={{ padding: 12, width: 260 }}>
@@ -16,9 +16,10 @@ export default function Hierarchy({ elements, selectedId, onSelect, onFocus }: H
       <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75 }}>Elements</div>
 
       <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
-        {pointclouds.map((c) => {
+        {items.map((c) => {
           const selected = c.id === selectedId
-          const pointCount = Number((c.summary as any)?.pointCount ?? 0)
+          const count = Number((c.summary as any)?.pointCount ?? (c.summary as any)?.count ?? 0)
+          const unit = c.type === 'pointcloud' ? 'pts' : 'splats'
           return (
             <button
               key={c.id}
@@ -36,12 +37,13 @@ export default function Hierarchy({ elements, selectedId, onSelect, onFocus }: H
               title={c.id}
             >
               <div style={{ fontSize: 13, fontWeight: 600 }}>{c.name}</div>
-              <div style={{ fontSize: 12, opacity: 0.75 }}>{pointCount.toLocaleString()} pts</div>
+              <div style={{ fontSize: 11, opacity: 0.5, textTransform: 'uppercase' }}>{c.type}</div>
+              <div style={{ fontSize: 12, opacity: 0.75 }}>{count.toLocaleString()} {unit}</div>
             </button>
           )
         })}
 
-        {elements && pointclouds.length === 0 && <div style={{ opacity: 0.75 }}>(no elements)</div>}
+        {elements && items.length === 0 && <div style={{ opacity: 0.75 }}>(no elements)</div>}
         {!elements && <div style={{ opacity: 0.75 }}>(loading…)</div>}
       </div>
 
@@ -49,7 +51,7 @@ export default function Hierarchy({ elements, selectedId, onSelect, onFocus }: H
         <div style={{ marginTop: 10, fontSize: 12, opacity: 0.65 }}>(nothing selected)</div>
       )}
 
-      <div style={{ marginTop: 14, fontSize: 12, opacity: 0.65 }}>Tip: click to select, double-click to focus the camera.</div>
+      <div style={{ marginTop: 14, fontSize: 12, opacity: 0.65 }}>Tip: Click to select, double-click to focus the camera.</div>
     </div>
   )
 }

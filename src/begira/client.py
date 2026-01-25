@@ -157,5 +157,100 @@ class BegiraClient:
             if put.status_code >= 400:
                 raise RuntimeError(f"Points upload failed: {put.status_code} {put.text}")
 
+    def log_gaussians(
+        self,
+        name: str,
+        positions: np.ndarray | object,
+        sh0: np.ndarray | None = None,
+        opacity: np.ndarray | None = None,
+        scales: np.ndarray | None = None,
+        rotations: np.ndarray | None = None,
+        *,
+        element_id: str | None = None,
+        timeout_s: float = 60.0,
+    ) -> str:
+        """Upload (add/update) a 3D Gaussian Splatting element into a running server.
+
+        Returns the element id.
+        """
+
+        # Convenience: allow passing a GaussianSplatData object directly.
+        if sh0 is None and not isinstance(positions, np.ndarray):
+            pos_attr = getattr(positions, "positions", None)
+            if pos_attr is not None:
+                sh0_attr = getattr(positions, "f_dc", None)
+                opacity_attr = getattr(positions, "opacity", None)
+                scales_attr = getattr(positions, "scales", None)
+                rot_attr = getattr(positions, "rotations", None)
+                positions = pos_attr
+                sh0 = sh0_attr
+                opacity = opacity_attr
+                scales = scales_attr
+                rotations = rot_attr
+
+        pos = np.ascontiguousarray(positions, dtype=np.float32)
+        n = pos.shape[0]
+
+        if sh0 is None:
+            sh0 = np.zeros((n, 3), dtype=np.float32)
+        else:
+            sh0 = np.ascontiguousarray(sh0, dtype=np.float32)
+
+        if opacity is None:
+            opacity = np.ones((n, 1), dtype=np.float32)
+        else:
+            opacity = np.ascontiguousarray(opacity, dtype=np.float32)
+            if opacity.ndim == 1:
+                opacity = opacity[:, np.newaxis]
+
+        if scales is None:
+            scales = np.zeros((n, 3), dtype=np.float32)
+        else:
+            scales = np.ascontiguousarray(scales, dtype=np.float32)
+
+        if rotations is None:
+            rotations = np.zeros((n, 4), dtype=np.float32)
+            rotations[:, 0] = 1.0  # Identity quaternion [1, 0, 0, 0]
+        else:
+            rotations = np.ascontiguousarray(rotations, dtype=np.float32)
+
+        # Build binary payload: [pos(3), sh0(3), opacity(1), scale(3), rot(4)] = 14 floats
+        payload_data = np.empty((n, 14), dtype="<f4")
+        payload_data[:, 0:3] = pos
+        payload_data[:, 3:6] = sh0
+        payload_data[:, 6:7] = opacity
+        payload_data[:, 7:10] = scales
+        payload_data[:, 10:14] = rotations
+
+        payload = payload_data.tobytes(order="C")
+
+        import httpx
+
+        with httpx.Client(base_url=self.base_url, timeout=timeout_s) as client:
+            req = {
+                "name": name,
+                "elementId": element_id,
+                "count": int(n),
+            }
+            res = client.post("/api/elements/gaussians/upload", json=req)
+            if res.status_code >= 400:
+                raise RuntimeError(f"Upload request failed: {res.status_code} {res.text}")
+
+            data = res.json()
+            eid = str(data.get("id"))
+            upload_url = str(data.get("uploadUrl"))
+            if not eid or not upload_url:
+                raise RuntimeError(f"Upload request returned invalid response: {data}")
+
+            params = {"name": name}
+            put = client.put(
+                upload_url,
+                params=params,
+                content=payload,
+                headers={"content-type": "application/octet-stream"},
+            )
+            if put.status_code >= 400:
+                raise RuntimeError(f"Gaussians upload failed: {put.status_code} {put.text}")
+
             out = put.json()
             return str(out.get("id") or eid)

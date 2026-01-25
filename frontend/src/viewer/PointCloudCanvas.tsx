@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } fr
 import * as THREE from 'three'
 import WASDControls from './WASDControls'
 import MultiPointCloudScene, { PointCloudRenderMode } from './MultiPointCloudScene'
+import GaussianSplatScene from './GaussianSplatScene'
 import {
   createClickGesture,
   isClickGesture,
@@ -166,18 +167,22 @@ function useSceneBounds(): {
 
 export default function PointCloudCanvas({
   cloudIds,
+  gaussianIds = [],
   selectedId,
   onSelect,
   focusTarget,
   onFocus,
   cloudMetaBounds,
+  gaussianMetaBounds = [],
 }: {
   cloudIds: string[]
+  gaussianIds?: string[]
   selectedId: string | null
   onSelect: (id: string | null) => void
   focusTarget: string | null
   onFocus: (id: string | null) => void
   cloudMetaBounds: { min: [number, number, number]; max: [number, number, number] }[]
+  gaussianMetaBounds?: { min: [number, number, number]; max: [number, number, number] }[]
 }) {
   const background = useMemo(() => new THREE.Color('#0b1020'), [])
 
@@ -251,9 +256,9 @@ export default function PointCloudCanvas({
 
   // IMPORTANT: refit whenever convention changes.
   useEffect(() => {
-    if (cloudIds.length === 0) return
+    if (cloudIds.length === 0 && gaussianIds.length === 0) return
     bumpFocus('convention-change')
-  }, [conventionId, cloudIds.length, bumpFocus])
+  }, [conventionId, cloudIds.length, gaussianIds.length, bumpFocus])
 
   // Choose a forward direction that makes the change visible.
   const viewForward = useMemo(() => {
@@ -263,36 +268,37 @@ export default function PointCloudCanvas({
 
   const topDownOnFocus = false
 
-  // Initialize focus when clouds first appear.
-  const prevCloudCount = useRef(0)
+  // Initialize focus when elements first appear.
+  const prevElementCount = useRef(0)
+  const allElementIds = useMemo(() => [...cloudIds, ...gaussianIds], [cloudIds, gaussianIds])
   useEffect(() => {
-    const prev = prevCloudCount.current
-    prevCloudCount.current = cloudIds.length
+    const prev = prevElementCount.current
+    prevElementCount.current = allElementIds.length
 
-    if (cloudIds.length === 0) {
+    if (allElementIds.length === 0) {
       setFocusId(null)
       return
     }
 
-    // Only set initial focus once, when clouds first appear.
-    if (prev === 0 && cloudIds.length > 0) {
-      setFocusId(cloudIds[0])
-      bumpFocus('startup:first-cloud')
+    // Only set initial focus once, when elements first appear.
+    if (prev === 0 && allElementIds.length > 0) {
+      setFocusId(allElementIds[0])
+      bumpFocus('startup:first-element')
       return
     }
 
-    // If the currently focused id disappears, fall back to first cloud.
+    // If the currently focused id disappears, fall back to first element.
     setFocusId((cur) => {
-      if (!cur) return cloudIds[0]
-      return cloudIds.includes(cur) ? cur : cloudIds[0]
+      if (!cur) return allElementIds[0]
+      return allElementIds.includes(cur) ? cur : allElementIds[0]
     })
-  }, [cloudIds, bumpFocus])
+  }, [allElementIds, bumpFocus])
 
   // External focus request (double-click from hierarchy or scene).
   // IMPORTANT: this should be the only time selection triggers a refit.
   useEffect(() => {
     if (!focusTarget) return
-    if (!cloudIds.includes(focusTarget)) {
+    if (!allElementIds.includes(focusTarget)) {
       // Clear invalid/old focus requests.
       onFocus(null)
       return
@@ -304,7 +310,7 @@ export default function PointCloudCanvas({
 
     // Consume the request so it doesn't refire on every render/poll tick.
     onFocus(null)
-  }, [cloudIds, focusTarget, bumpFocus, onFocus])
+  }, [allElementIds, focusTarget, bumpFocus, onFocus])
 
   // First cloud decoded bounds:
   const firstCloudId = cloudIds[0] ?? ''
@@ -317,8 +323,8 @@ export default function PointCloudCanvas({
   // Scene bounds from meta:
   const scene = useSceneBounds()
   useEffect(() => {
-    scene.setBoundsFromMeta(cloudMetaBounds)
-  }, [cloudMetaBounds, scene])
+    scene.setBoundsFromMeta([...cloudMetaBounds, ...gaussianMetaBounds])
+  }, [cloudMetaBounds, gaussianMetaBounds, scene])
 
   const focusBounds = useMemo(() => {
     let b: Bounds3 | null = null
@@ -326,17 +332,25 @@ export default function PointCloudCanvas({
     if (!focusId) b = scene.bounds
     else if (focusId === firstCloudId && firstDecodedBounds) b = firstDecodedBounds
     else {
-      const idx = cloudIds.findIndex((x) => x === focusId)
-      if (idx >= 0) {
-        const mb = cloudMetaBounds[idx]
+      // Search in clouds
+      const cIdx = cloudIds.findIndex((x) => x === focusId)
+      if (cIdx >= 0) {
+        const mb = cloudMetaBounds[cIdx]
         if (mb) b = { min: new THREE.Vector3(...mb.min), max: new THREE.Vector3(...mb.max) }
+      } else {
+        // Search in gaussians
+        const gIdx = gaussianIds.findIndex((x) => x === focusId)
+        if (gIdx >= 0) {
+          const mb = gaussianMetaBounds[gIdx]
+          if (mb) b = { min: new THREE.Vector3(...mb.min), max: new THREE.Vector3(...mb.max) }
+        }
       }
       if (!b) b = scene.bounds
     }
 
     if (!b) return null
     return transformBounds(b, convention.worldToView)
-  }, [cloudIds, cloudMetaBounds, convention.worldToView, firstCloudId, firstDecodedBounds, focusId, scene.bounds])
+  }, [cloudIds, gaussianIds, cloudMetaBounds, gaussianMetaBounds, convention.worldToView, firstCloudId, firstDecodedBounds, focusId, scene.bounds])
 
   const canvasGesture = useRef(createClickGesture())
 
@@ -395,6 +409,16 @@ export default function PointCloudCanvas({
             // Explicit user intent: always refit on double-click, even if it's already focused.
             setFocusId(id)
             bumpFocus('cloud:doubleclick-focus')
+            onFocus(id)
+          }}
+        />
+        <GaussianSplatScene
+          elementIds={gaussianIds}
+          selectedId={selectedId}
+          onSelect={(id) => onSelect(id)}
+          onFocus={(id) => {
+            setFocusId(id)
+            bumpFocus('gaussians:doubleclick-focus')
             onFocus(id)
           }}
         />

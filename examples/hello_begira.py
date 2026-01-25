@@ -6,13 +6,14 @@ from begira.ply import load_ply_gaussians
 
 
 def main() -> None:
-    client = begira.run(port=57792)
+    client = begira.run(port=57793)
 
     client.set_coordinate_convention(begira.CoordinateConvention.Z_UP)
 
     assets_dir = Path(__file__).resolve().parent / "assets"
     gs = load_ply_gaussians(str(assets_dir / "gaussians.ply"))
-    client.log_points("gaussians", gs.positions, gs.colors_rgb8, point_size=0.025)
+    client.log_gaussians("gaussians", gs)
+    client.log_points("gaussians", gs.positions+1, gs.colors_rgb8, point_size=0.025)
 
     try:
         while True:

@@ -7,7 +7,7 @@ import numpy as np
 from fastapi import FastAPI, HTTPException, Request
 from starlette.responses import Response
 
-from .elements import PointCloudElement
+from .elements import PointCloudElement, GaussianSplatElement
 from .registry import REGISTRY
 
 
@@ -41,6 +41,18 @@ def mount_elements_api(app: FastAPI) -> None:
                         "createdAt": float(e.created_at),
                         "bounds": _bounds_from_positions(e.positions),
                         "summary": {"pointCount": int(e.positions.shape[0])},
+                    }
+                )
+            elif isinstance(e, GaussianSplatElement):
+                out.append(
+                    {
+                        "id": e.id,
+                        "type": e.type,
+                        "name": e.name,
+                        "revision": int(e.revision),
+                        "createdAt": float(e.created_at),
+                        "bounds": _bounds_from_positions(e.positions),
+                        "summary": {"count": int(e.positions.shape[0])},
                     }
                 )
             else:
@@ -86,6 +98,33 @@ def mount_elements_api(app: FastAPI) -> None:
                 },
             }
 
+        if isinstance(e, GaussianSplatElement):
+            schema = {
+                "position": {"type": "float32", "components": 3},
+                "sh0": {"type": "float32", "components": 3},
+                "opacity": {"type": "float32", "components": 1},
+                "scale": {"type": "float32", "components": 3},
+                "rotation": {"type": "float32", "components": 4},
+            }
+            return {
+                "id": e.id,
+                "type": e.type,
+                "name": e.name,
+                "revision": int(e.revision),
+                "bounds": _bounds_from_positions(e.positions),
+                "endianness": "little",
+                "pointSize": float(e.point_size),
+                "count": int(e.positions.shape[0]),
+                "bytesPerGaussian": 14 * 4,
+                "schema": schema,
+                "payloads": {
+                    "gaussians": {
+                        "url": f"/api/elements/{e.id}/payloads/gaussians",
+                        "contentType": "application/octet-stream",
+                    }
+                },
+            }
+
         raise HTTPException(status_code=400, detail=f"Unsupported element type: {e.type}")
 
     @app.get("/api/elements/{element_id}/payloads/{payload_name}")
@@ -112,6 +151,21 @@ def mount_elements_api(app: FastAPI) -> None:
             out = np.empty((n, 15), dtype=np.uint8)
             out[:, 0:12] = pos.view(np.uint8).reshape(n, 12)
             out[:, 12:15] = col
+            return Response(content=out.tobytes(order="C"), media_type="application/octet-stream")
+
+        if isinstance(e, GaussianSplatElement):
+            if payload_name != "gaussians":
+                raise HTTPException(status_code=404, detail="Unknown payload")
+
+            n = e.positions.shape[0]
+            # [pos(3), sh0(3), opacity(1), scale(3), rot(4)] = 14 floats
+            out = np.empty((n, 14), dtype="<f4")
+            out[:, 0:3] = e.positions
+            out[:, 3:6] = e.sh0
+            out[:, 6:7] = e.opacity
+            out[:, 7:10] = e.scales
+            out[:, 10:14] = e.rotations
+
             return Response(content=out.tobytes(order="C"), media_type="application/octet-stream")
 
         raise HTTPException(status_code=400, detail=f"Unsupported element type: {e.type}")
@@ -232,6 +286,88 @@ def mount_elements_api(app: FastAPI) -> None:
 
         return {"ok": True, "id": pc.id, "type": pc.type, "revision": int(pc.revision), "pointCount": pc.point_count}
 
+    @app.post("/api/elements/gaussians/upload")
+    def request_gaussians_upload(body: dict) -> dict:
+        """Request an upload slot for a gaussians element."""
+
+        try:
+            name = str(body.get("name"))
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid name")
+        if not name:
+            raise HTTPException(status_code=400, detail="Missing name")
+
+        try:
+            count = int(body.get("count"))
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid count")
+        if count < 0:
+            raise HTTPException(status_code=400, detail="count must be >= 0")
+
+        element_id = body.get("elementId")
+        if element_id is not None:
+            element_id = str(element_id).strip() or None
+        if element_id is None:
+            element_id = uuid.uuid4().hex
+
+        # [pos(3), sh0(3), opacity(1), scale(3), rot(4)] = 14 floats = 56 bytes
+        bytes_per_gaussian = 14 * 4
+
+        return {
+            "id": element_id,
+            "type": "gaussians",
+            "name": name,
+            "count": count,
+            "bytesPerGaussian": bytes_per_gaussian,
+            "uploadUrl": f"/api/elements/{element_id}/payloads/gaussians",
+        }
+
+    @app.put("/api/elements/{element_id}/payloads/gaussians")
+    async def upload_gaussians_payload(element_id: str, request: Request) -> dict:
+        """Upload raw gaussians buffer and upsert as a gaussians element."""
+
+        name = request.query_params.get("name")
+        if not name:
+            raise HTTPException(status_code=400, detail="Missing query param: name")
+
+        raw = await request.body()
+        nbytes = len(raw)
+        stride_bytes = 14 * 4
+
+        if nbytes % stride_bytes != 0:
+            raise HTTPException(
+                status_code=400, detail=f"Payload size {nbytes} not divisible by stride {stride_bytes}"
+            )
+
+        n = nbytes // stride_bytes
+
+        if n == 0:
+            positions = np.empty((0, 3), dtype=np.float32)
+            sh0 = np.empty((0, 3), dtype=np.float32)
+            opacity = np.empty((0, 1), dtype=np.float32)
+            scales = np.empty((0, 3), dtype=np.float32)
+            rotations = np.empty((0, 4), dtype=np.float32)
+        else:
+            # All little-endian float32
+            data = np.frombuffer(raw, dtype="<f4").reshape((n, 14))
+            positions = np.ascontiguousarray(data[:, 0:3])
+            sh0 = np.ascontiguousarray(data[:, 3:6])
+            opacity = np.ascontiguousarray(data[:, 6:7])
+            scales = np.ascontiguousarray(data[:, 7:10])
+            rotations = np.ascontiguousarray(data[:, 10:14])
+
+        gs = REGISTRY.upsert_gaussians(
+            name=name,
+            positions=positions,
+            sh0=sh0,
+            opacity=opacity,
+            scales=scales,
+            rotations=rotations,
+            element_id=element_id,
+        )
+
+        return {"ok": True, "id": gs.id, "type": gs.type, "revision": int(gs.revision), "count": gs.count}
+
     @app.patch("/api/elements/{element_id}/meta")
     def patch_element_meta(element_id: str, body: dict) -> dict[str, Any]:
         e = REGISTRY.get_element(element_id)
@@ -249,5 +385,17 @@ def mount_elements_api(app: FastAPI) -> None:
                 raise HTTPException(status_code=400, detail=str(ex))
             except KeyError:
                 raise HTTPException(status_code=404, detail="Unknown pointcloud")
+
+        if isinstance(e, GaussianSplatElement):
+            try:
+                point_size = body.get("pointSize")
+                if point_size is not None:
+                    point_size = float(point_size)
+                gs = REGISTRY.update_gaussians_settings(element_id, point_size=point_size)
+                return {"ok": True, "id": gs.id, "type": gs.type, "revision": int(gs.revision), "pointSize": float(gs.point_size)}
+            except (TypeError, ValueError) as ex:
+                raise HTTPException(status_code=400, detail=str(ex))
+            except KeyError:
+                raise HTTPException(status_code=404, detail="Unknown gaussians")
 
         raise HTTPException(status_code=400, detail=f"Unsupported element type: {getattr(e, 'type', None)}")

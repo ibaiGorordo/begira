@@ -7,9 +7,9 @@ import numpy as np
 from begira.ply import load_ply_gaussians
 
 
-def test_load_ply_gaussians_object0_smoke() -> None:
+def test_load_ply_gaussians_smoke() -> None:
     # Uses the small-ish example asset shipped with the repo.
-    path = Path(__file__).parent.parent / "examples" / "assets" / "object_0.ply"
+    path = Path(__file__).parent.parent / "examples" / "assets" / "gaussians.ply"
     gs = load_ply_gaussians(path)
 
     assert gs.positions.ndim == 2

@@ -67,6 +67,7 @@ export default function App() {
   const didInitFocus = useRef(false)
 
   const pointclouds = useMemo(() => (elements ?? []).filter((e) => e.type === 'pointcloud'), [elements])
+  const gaussians = useMemo(() => (elements ?? []).filter((e) => e.type === 'gaussians'), [elements])
 
   useEffect(() => {
     fetchElements()
@@ -140,6 +141,14 @@ export default function App() {
     return items
   }, [pointclouds])
 
+  const orderedGaussians = useMemo(() => {
+    const items = gaussians
+    if (items.every((c) => typeof c.createdAt === 'number')) {
+      return [...items].sort((a, b) => (a.createdAt! - b.createdAt!))
+    }
+    return items
+  }, [gaussians])
+
   return (
     <div className="app" style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
       <div className="header" style={{ borderBottom: '1px solid #1b2235', background: '#0b1020', color: '#e8ecff' }}>
@@ -168,6 +177,7 @@ export default function App() {
         <div style={{ flex: 1, minWidth: 0 }}>
           <PointCloudCanvas
             cloudIds={orderedPointclouds.map((c) => c.id)}
+            gaussianIds={orderedGaussians.map((c) => c.id)}
             selectedId={selectedId}
             onSelect={setSelectedId}
             focusTarget={focusTarget}
@@ -178,6 +188,7 @@ export default function App() {
               else setFocusTarget(id)
             }}
             cloudMetaBounds={orderedPointclouds.map((c) => c.bounds).filter(Boolean) as any}
+            gaussianMetaBounds={orderedGaussians.map((c) => c.bounds).filter(Boolean) as any}
           />
         </div>
 

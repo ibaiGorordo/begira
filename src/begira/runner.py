@@ -62,6 +62,70 @@ class BegiraServer:
         )
         return pc.id
 
+    def log_gaussians(
+        self,
+        name: str,
+        positions: np.ndarray | object,
+        sh0: np.ndarray | None = None,
+        opacity: np.ndarray | None = None,
+        scales: np.ndarray | None = None,
+        rotations: np.ndarray | None = None,
+        *,
+        element_id: str | None = None,
+    ) -> str:
+        """Log (add/update) a 3D Gaussian Splatting element."""
+
+        # Convenience: allow passing a GaussianSplatData object directly.
+        if sh0 is None and not isinstance(positions, np.ndarray):
+            pos_attr = getattr(positions, "positions", None)
+            if pos_attr is not None:
+                sh0_attr = getattr(positions, "f_dc", None)
+                opacity_attr = getattr(positions, "opacity", None)
+                scales_attr = getattr(positions, "scales", None)
+                rot_attr = getattr(positions, "rotations", None)
+                positions = pos_attr
+                sh0 = sh0_attr
+                opacity = opacity_attr
+                scales = scales_attr
+                rotations = rot_attr
+
+        pos = np.ascontiguousarray(positions, dtype=np.float32)
+        n = pos.shape[0]
+
+        if sh0 is None:
+            sh0 = np.zeros((n, 3), dtype=np.float32)
+        else:
+            sh0 = np.ascontiguousarray(sh0, dtype=np.float32)
+
+        if opacity is None:
+            opacity = np.ones((n, 1), dtype=np.float32)
+        else:
+            opacity = np.ascontiguousarray(opacity, dtype=np.float32)
+            if opacity.ndim == 1:
+                opacity = opacity[:, np.newaxis]
+
+        if scales is None:
+            scales = np.zeros((n, 3), dtype=np.float32)
+        else:
+            scales = np.ascontiguousarray(scales, dtype=np.float32)
+
+        if rotations is None:
+            rotations = np.zeros((n, 4), dtype=np.float32)
+            rotations[:, 0] = 1.0  # Identity quaternion [1, 0, 0, 0]
+        else:
+            rotations = np.ascontiguousarray(rotations, dtype=np.float32)
+
+        gs = REGISTRY.upsert_gaussians(
+            name=name,
+            positions=pos,
+            sh0=sh0,
+            opacity=opacity,
+            scales=scales,
+            rotations=rotations,
+            element_id=element_id,
+        )
+        return gs.id
+
     def log_ply(
         self,
         name: str,
@@ -81,6 +145,24 @@ class BegiraServer:
             pc.colors,
             element_id=element_id,
             point_size=point_size,
+        )
+
+    def log_ply_gaussians(
+        self,
+        name: str,
+        path: str,
+        *,
+        element_id: str | None = None,
+    ) -> str:
+        """Load a `.ply` 3DGS file and log it as a gaussians element."""
+
+        from .ply import load_ply_gaussians
+
+        gs = load_ply_gaussians(path)
+        return self.log_gaussians(
+            name,
+            gs,
+            element_id=element_id,
         )
 
     def get_viewer_settings(self, *, timeout_s: float = 10.0) -> dict:
