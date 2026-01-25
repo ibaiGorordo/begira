@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ElementInfo } from './api'
 import { fetchPointCloudElementMeta, fetchGaussianElementMeta, updatePointCloudSettings } from './api'
+import { COLORMAPS, DEFAULT_DEPTH_COLORMAP, DEFAULT_HEIGHT_COLORMAP, type ColormapId } from './colormaps'
 
 type Props = {
   selected: ElementInfo | null
@@ -22,6 +23,8 @@ export default function Inspector({ selected }: Props) {
   type ColorMode = 'logged' | 'solid' | 'height' | 'depth'
   const [colorMode, setColorMode] = useState<ColorMode>('logged')
   const [solidColor, setSolidColor] = useState<string>('#ff8a33') // hex string for input[type=color]
+  const [colorMap, setColorMap] = useState<ColormapId>(DEFAULT_HEIGHT_COLORMAP)
+  const [isVisible, setIsVisible] = useState(true)
 
   useEffect(() => {
     setErr(null)
@@ -49,7 +52,11 @@ export default function Inspector({ selected }: Props) {
       // visual override (client-only)
       const vis = anyWin.__begira_visual_override && anyWin.__begira_visual_override[selected.id]
       if (vis) {
-        setColorMode(vis.colorMode ?? 'logged')
+        const mode = (vis.colorMode ?? 'logged') as ColorMode
+        setColorMode(mode)
+        const fallback =
+          mode === 'depth' ? DEFAULT_DEPTH_COLORMAP : mode === 'height' ? DEFAULT_HEIGHT_COLORMAP : DEFAULT_HEIGHT_COLORMAP
+        setColorMap((vis.colorMap as ColormapId) ?? fallback)
         if (vis.solidColor) {
           // assume [r,g,b] floats 0..1
           const c = vis.solidColor
@@ -62,7 +69,10 @@ export default function Inspector({ selected }: Props) {
         }
       } else {
         setColorMode('logged')
+        setColorMap(DEFAULT_HEIGHT_COLORMAP)
       }
+      const visibilityMap = anyWin.__begira_visibility || {}
+      setIsVisible(visibilityMap[selected.id] !== false)
     } catch {}
   }, [selected?.id, isPointCloud, isGaussians])
 
@@ -100,7 +110,12 @@ export default function Inspector({ selected }: Props) {
     } catch {}
   }
 
-  const setVisualOverrideForElement = (id: string, mode: ColorMode, hexColor?: string | null) => {
+  const setVisualOverrideForElement = (
+    id: string,
+    mode: ColorMode,
+    hexColor?: string | null,
+    mapId: ColormapId = DEFAULT_HEIGHT_COLORMAP,
+  ) => {
     try {
       const anyWin = window as any
       anyWin.__begira_visual_override = anyWin.__begira_visual_override || {}
@@ -117,16 +132,30 @@ export default function Inspector({ selected }: Props) {
           const b = parseInt(c.substring(4, 6), 16) / 255
           obj.solidColor = [r, g, b]
         }
+        if (mode === 'height' || mode === 'depth') {
+          obj.colorMap = mapId
+        }
         anyWin.__begira_visual_override[id] = obj
       }
       // notify viewers to re-read overrides and re-render
       try {
         if (typeof window !== 'undefined' && (window as any).dispatchEvent) {
-          // debug log
-          try { console.debug('[Inspector] visual override set', id, anyWin.__begira_visual_override[id]) } catch {}
           const ev = new CustomEvent('begira_visual_override_changed', { detail: { id } })
           window.dispatchEvent(ev)
         }
+      } catch {}
+    } catch {}
+  }
+
+  const setVisibilityForElement = (id: string, visible: boolean) => {
+    try {
+      const anyWin = window as any
+      anyWin.__begira_visibility = anyWin.__begira_visibility || {}
+      anyWin.__begira_visibility[id] = visible
+      setIsVisible(visible)
+      try {
+        const ev = new CustomEvent('begira_visibility_changed', { detail: { id } })
+        window.dispatchEvent(ev)
       } catch {}
     } catch {}
   }
@@ -197,6 +226,19 @@ export default function Inspector({ selected }: Props) {
 
       {(isPointCloud || isGaussians) && (
         <div style={{ marginTop: 14 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, opacity: 0.9 }}>
+            <input
+              type="checkbox"
+              checked={isVisible}
+              onChange={(e) => setVisibilityForElement(selected.id, e.target.checked)}
+            />
+            Visible
+          </label>
+        </div>
+      )}
+
+      {(isPointCloud || isGaussians) && (
+        <div style={{ marginTop: 14 }}>
           <label style={{ display: 'block', fontSize: 12, opacity: 0.9 }}>Color</label>
 
           <div style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>Mode</div>
@@ -208,7 +250,17 @@ export default function Inspector({ selected }: Props) {
                   key={v}
                   onClick={() => {
                     setColorMode(v)
-                    setVisualOverrideForElement(selected.id, v, solidColor)
+                    if (v === 'height') {
+                      setColorMap(DEFAULT_HEIGHT_COLORMAP)
+                      setVisualOverrideForElement(selected.id, v, solidColor, DEFAULT_HEIGHT_COLORMAP)
+                      return
+                    }
+                    if (v === 'depth') {
+                      setColorMap(DEFAULT_DEPTH_COLORMAP)
+                      setVisualOverrideForElement(selected.id, v, solidColor, DEFAULT_DEPTH_COLORMAP)
+                      return
+                    }
+                    setVisualOverrideForElement(selected.id, v, solidColor, colorMap)
                   }}
                   style={{
                     padding: '6px 8px',
@@ -233,10 +285,39 @@ export default function Inspector({ selected }: Props) {
                 value={solidColor}
                 onChange={(e) => {
                   setSolidColor(e.target.value)
-                  setVisualOverrideForElement(selected.id, 'solid', e.target.value)
+                  setVisualOverrideForElement(selected.id, 'solid', e.target.value, colorMap)
                 }}
               />
               <div style={{ fontSize: 12, opacity: 0.8 }}>{solidColor}</div>
+            </div>
+          )}
+
+          {(colorMode === 'height' || colorMode === 'depth') && (
+            <div style={{ marginTop: 12 }}>
+              <label style={{ display: 'block', fontSize: 12, opacity: 0.85 }}>Colormap</label>
+              <select
+                value={colorMap}
+                onChange={(e) => {
+                  const next = e.target.value as ColormapId
+                  setColorMap(next)
+                  setVisualOverrideForElement(selected.id, colorMode, solidColor, next)
+                }}
+                style={{
+                  marginTop: 6,
+                  width: '100%',
+                  background: '#0f1630',
+                  color: '#e8ecff',
+                  border: '1px solid #1b2235',
+                  borderRadius: 6,
+                  padding: '6px 8px',
+                }}
+              >
+                {COLORMAPS.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
             </div>
           )}
         </div>

@@ -65,22 +65,34 @@ export default function App() {
   const [focusTarget, setFocusTarget] = useState<string | null>(null)
   const lastRev = useRef<number>(-1)
   const didInitFocus = useRef(false)
+  const orderRef = useRef<Map<string, number>>(new Map())
+  const nextOrderRef = useRef(0)
 
   const pointclouds = useMemo(() => (elements ?? []).filter((e) => e.type === 'pointcloud'), [elements])
   const gaussians = useMemo(() => (elements ?? []).filter((e) => e.type === 'gaussians'), [elements])
 
+  const orderElements = (items: ElementInfo[]) => {
+    const orderMap = orderRef.current
+    let next = nextOrderRef.current
+    for (const item of items) {
+      if (!orderMap.has(item.id)) {
+        orderMap.set(item.id, next)
+        next += 1
+      }
+    }
+    nextOrderRef.current = next
+    return [...items].sort((a, b) => (orderMap.get(a.id) ?? 0) - (orderMap.get(b.id) ?? 0))
+  }
+
   useEffect(() => {
     fetchElements()
       .then((items) => {
-        setElements(items)
+        const ordered = orderElements(items)
+        setElements(ordered)
         setSelectedId(null)
 
         // Default focus: first element that appears (only once).
         if (!didInitFocus.current) {
-          const ordered =
-            items.length > 0 && items.every((c) => typeof c.createdAt === 'number')
-              ? [...items].sort((a, b) => (a.createdAt! - b.createdAt!))
-              : items
           if (ordered.length > 0) {
             didInitFocus.current = true
             setFocusTarget(ordered[0].id)
@@ -102,14 +114,15 @@ export default function App() {
           lastRev.current = ev.globalRevision
           const items = await fetchElements()
           if (cancelled) return
-          setElements(items)
+          const ordered = orderElements(items)
+          setElements(ordered)
 
-          if (items.length === 0) {
+          if (ordered.length === 0) {
             setSelectedId(null)
             return
           }
 
-          if (selectedId !== null && !items.some((c) => c.id === selectedId)) {
+          if (selectedId !== null && !ordered.some((c) => c.id === selectedId)) {
             setSelectedId(null)
           }
         }
@@ -132,22 +145,6 @@ export default function App() {
     if (!elements || selectedId === null) return null
     return elements.find((c) => c.id === selectedId) ?? null
   }, [elements, selectedId])
-
-  const orderedPointclouds = useMemo(() => {
-    const items = pointclouds
-    if (items.every((c) => typeof c.createdAt === 'number')) {
-      return [...items].sort((a, b) => (a.createdAt! - b.createdAt!))
-    }
-    return items
-  }, [pointclouds])
-
-  const orderedGaussians = useMemo(() => {
-    const items = gaussians
-    if (items.every((c) => typeof c.createdAt === 'number')) {
-      return [...items].sort((a, b) => (a.createdAt! - b.createdAt!))
-    }
-    return items
-  }, [gaussians])
 
   return (
     <div className="app" style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
@@ -176,8 +173,8 @@ export default function App() {
 
         <div style={{ flex: 1, minWidth: 0 }}>
           <PointCloudCanvas
-            cloudIds={orderedPointclouds.map((c) => c.id)}
-            gaussianIds={orderedGaussians.map((c) => c.id)}
+            cloudIds={pointclouds.map((c) => c.id)}
+            gaussianIds={gaussians.map((c) => c.id)}
             selectedId={selectedId}
             onSelect={setSelectedId}
             focusTarget={focusTarget}
@@ -187,8 +184,8 @@ export default function App() {
               if (id === null) setFocusTarget(null)
               else setFocusTarget(id)
             }}
-            cloudMetaBounds={orderedPointclouds.map((c) => c.bounds).filter(Boolean) as any}
-            gaussianMetaBounds={orderedGaussians.map((c) => c.bounds).filter(Boolean) as any}
+            cloudMetaBounds={pointclouds.map((c) => c.bounds).filter(Boolean) as any}
+            gaussianMetaBounds={gaussians.map((c) => c.bounds).filter(Boolean) as any}
           />
         </div>
 

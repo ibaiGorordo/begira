@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useGaussians } from './useGaussians'
 import { SplatMesh, dyno, type SplatTransformer } from '@sparkjsdev/spark'
+import { COLORMAPS, DEFAULT_DEPTH_COLORMAP, DEFAULT_HEIGHT_COLORMAP, sampleColormap, type ColormapDef, type ColormapId } from './colormaps'
 import { useThree, useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 
@@ -44,8 +45,6 @@ function Gaussians({
       rotations: Float32Array | null
       count: number
     }
-    // store references to geometries discovered inside loaded SplatMesh instances
-    meshGeometries?: Array<{ geom: any }>
   }>({})
 
   const boundingSphereInitializedRef = useRef(false)
@@ -181,254 +180,18 @@ function Gaussians({
     return new Blob([plyBuffer], { type: 'application/octet-stream' })
   }
 
-  // Fast path: update existing SplatMesh geometry color attributes from the working cache.
-  // This updates BufferAttributes in-place (cheap) and is used during batched depth computation
-  // to provide near-instant visual feedback without rebuilding meshes.
-  const updateMeshesSh0FromCache = () => {
-    try {
-      const cache = elementCacheRef.current.working
-      if (!cache || !cache.sh0) return
-      const sh0 = cache.sh0
-      try { console.debug('[Gaussians] updateMeshesSh0FromCache start', elementId, 'cacheCount=', cache.count, 'sh0len=', sh0.length) } catch {}
-
-      // First, if we have cached geometries discovered at SplatMesh onLoad, update them directly
-      const meshGeoms = elementCacheRef.current.meshGeometries
-      if (meshGeoms && meshGeoms.length > 0) {
-        try { console.debug('[Gaussians] updating from cached meshGeometries count=', meshGeoms.length) } catch {}
-        for (let mg of meshGeoms) {
-          try {
-            const geom = mg.geom
-            try { console.debug('[Gaussians] cached-geom attrs=', Object.keys(geom.attributes || {})) } catch {}
-            if (!geom || !geom.attributes) continue
-            // attempt orig_index mapping first
-            const orig = geom.attributes.orig_index || geom.attributes.origIndex || null
-            if (orig && orig.array) {
-              const origArray = orig.array
-              try { console.debug('[Gaussians] cached-geom origArrayLen=', origArray.length, 'posCount=', geom.attributes.position && geom.attributes.position.count) } catch {}
-              // try f_dc_ set
-              if (geom.attributes['f_dc_0'] && geom.attributes['f_dc_1'] && geom.attributes['f_dc_2']) {
-                const a0 = geom.attributes['f_dc_0'].array
-                const a1 = geom.attributes['f_dc_1'].array
-                const a2 = geom.attributes['f_dc_2'].array
-                for (let i = 0; i < origArray.length; i++) {
-                  const oi = Math.round(origArray[i])
-                  if (oi >= 0 && oi * 3 + 2 < sh0.length) {
-                    a0[i] = sh0[oi * 3 + 0]
-                    a1[i] = sh0[oi * 3 + 1]
-                    a2[i] = sh0[oi * 3 + 2]
-                  }
-                }
-                geom.attributes['f_dc_0'].needsUpdate = true
-                geom.attributes['f_dc_1'].needsUpdate = true
-                geom.attributes['f_dc_2'].needsUpdate = true
-                try { console.debug('[Gaussians] cached-geom updated branch=f_dc_ sample=', a0[0], a1[0], a2[0]) } catch {}
-                continue
-              }
-              // try f_dc vec3
-              if (geom.attributes['f_dc']) {
-                const out = geom.attributes['f_dc'].array
-                for (let i = 0; i < origArray.length; i++) {
-                  const oi = Math.round(origArray[i])
-                  if (oi >= 0 && oi * 3 + 2 < sh0.length) {
-                    out[i * 3 + 0] = sh0[oi * 3 + 0]
-                    out[i * 3 + 1] = sh0[oi * 3 + 1]
-                    out[i * 3 + 2] = sh0[oi * 3 + 2]
-                  }
-                }
-                geom.attributes['f_dc'].needsUpdate = true
-                try { console.debug('[Gaussians] cached-geom updated branch=f_dc sample=', out[0], out[1], out[2]) } catch {}
-                continue
-              }
-              // fallback to sh0 attr
-              if (!geom.attributes.sh0) {
-                geom.setAttribute('sh0', new THREE.BufferAttribute(new Float32Array(orig.array.length * 3), 3))
-              }
-              const out = geom.attributes.sh0.array
-              for (let i = 0; i < origArray.length; i++) {
-                const oi = Math.round(origArray[i])
-                if (oi >= 0 && oi * 3 + 2 < sh0.length) {
-                  out[i * 3 + 0] = sh0[oi * 3 + 0]
-                  out[i * 3 + 1] = sh0[oi * 3 + 1]
-                  out[i * 3 + 2] = sh0[oi * 3 + 2]
-                }
-              }
-              geom.attributes.sh0.needsUpdate = true
-              try { console.debug('[Gaussians] cached-geom updated branch=sh0 sample=', out[0], out[1], out[2]) } catch {}
-              continue
-            }
-
-            // if no orig_index, try matching by vertex count
-            const pos = geom.attributes.position
-            if (pos && pos.count === cache.count) {
-              if (!geom.attributes.sh0) geom.setAttribute('sh0', new THREE.BufferAttribute(new Float32Array(pos.count * 3), 3))
-              const out = geom.attributes.sh0.array
-              for (let i = 0; i < cache.count; i++) {
-                out[i * 3 + 0] = sh0[i * 3 + 0]
-                out[i * 3 + 1] = sh0[i * 3 + 1]
-                out[i * 3 + 2] = sh0[i * 3 + 2]
-              }
-              geom.attributes.sh0.needsUpdate = true
-              continue
-            }
-          } catch (e) {
-            // ignore per-geom errors
-          }
-        }
-        return
-      }
-
-      const applyTo = (obj: any) => {
-        try { console.debug('[Gaussians] applyTo object', obj ? (obj.name || obj.uuid) : obj, 'children=', obj && obj.children ? obj.children.length : 0) } catch {}
-        if (!obj || !obj.traverse) return
-        obj.traverse((child: any) => {
-          try { if (child && child.geometry) { try { console.debug('[Gaussians] traverse child has geometry', child.name || child.uuid, 'attrs=', Object.keys(child.geometry.attributes || {}), 'type=', child.type, 'mat=', child.material && child.material.type) } catch {} } } catch {}
-          try {
-            const geom = child.geometry
-            if (!geom || !geom.attributes) return
-
-            // Prefer orig_index mapping when present
-            const orig = geom.attributes.orig_index || geom.attributes.origIndex || null
-            if (orig && orig.array) {
-              const origArray = orig.array
-              // Determine which attribute set the mesh uses for sh0 / f_dc
-              const hasFdc0 = !!(geom.attributes['f_dc_0'] && geom.attributes['f_dc_0'].array)
-              const hasFdcVec3 = !!(geom.attributes['f_dc'] && geom.attributes['f_dc'].array)
-              let outAttrName: string | null = null
-              if (hasFdc0) outAttrName = 'f_dc_'
-              else if (hasFdcVec3) outAttrName = 'f_dc'
-              else outAttrName = 'sh0'
-
-              // Ensure required attributes exist
-              if (outAttrName === 'f_dc_') {
-                if (!geom.attributes['f_dc_0']) geom.setAttribute('f_dc_0', new THREE.BufferAttribute(new Float32Array(origArray.length), 1))
-                if (!geom.attributes['f_dc_1']) geom.setAttribute('f_dc_1', new THREE.BufferAttribute(new Float32Array(origArray.length), 1))
-                if (!geom.attributes['f_dc_2']) geom.setAttribute('f_dc_2', new THREE.BufferAttribute(new Float32Array(origArray.length), 1))
-                const a0 = geom.attributes['f_dc_0'].array
-                const a1 = geom.attributes['f_dc_1'].array
-                const a2 = geom.attributes['f_dc_2'].array
-                for (let i = 0; i < origArray.length; i++) {
-                  const oi = Math.round(origArray[i])
-                  if (oi >= 0 && oi * 3 + 2 < sh0.length) {
-                    a0[i] = sh0[oi * 3 + 0]
-                    a1[i] = sh0[oi * 3 + 1]
-                    a2[i] = sh0[oi * 3 + 2]
-                  }
-                }
-                geom.attributes['f_dc_0'].needsUpdate = true
-                geom.attributes['f_dc_1'].needsUpdate = true
-                geom.attributes['f_dc_2'].needsUpdate = true
-                try { console.debug('[Gaussians] updated attributes f_dc_0/1/2 on object', child.name || child.uuid, 'count=', origArray.length) } catch {}
-                return
-              }
-
-              if (outAttrName === 'f_dc') {
-                let outAttr = geom.attributes['f_dc']
-                if (!outAttr) {
-                  const arr = new Float32Array(origArray.length * 3)
-                  geom.setAttribute('f_dc', new THREE.BufferAttribute(arr, 3))
-                  outAttr = geom.attributes['f_dc']
-                }
-                const out = outAttr.array
-                for (let i = 0; i < origArray.length; i++) {
-                  const oi = Math.round(origArray[i])
-                  if (oi >= 0 && oi * 3 + 2 < sh0.length) {
-                    out[i * 3 + 0] = sh0[oi * 3 + 0]
-                    out[i * 3 + 1] = sh0[oi * 3 + 1]
-                    out[i * 3 + 2] = sh0[oi * 3 + 2]
-                  }
-                }
-                outAttr.needsUpdate = true
-                try { console.debug('[Gaussians] updated attribute f_dc (vec3) on object', child.name || child.uuid, 'count=', origArray.length) } catch {}
-                return
-              }
-
-              // Fallback to 'sh0' attribute (vec3)
-              let outAttr = geom.attributes.sh0
-              if (!outAttr) {
-                const arr = new Float32Array(origArray.length * 3)
-                geom.setAttribute('sh0', new THREE.BufferAttribute(arr, 3))
-                outAttr = geom.attributes.sh0
-              }
-              const out = outAttr.array
-              for (let i = 0; i < origArray.length; i++) {
-                const oi = Math.round(origArray[i])
-                if (oi >= 0 && oi * 3 + 2 < sh0.length) {
-                  out[i * 3 + 0] = sh0[oi * 3 + 0]
-                  out[i * 3 + 1] = sh0[oi * 3 + 1]
-                  out[i * 3 + 2] = sh0[oi * 3 + 2]
-                }
-              }
-              outAttr.needsUpdate = true
-              try { console.debug('[Gaussians] updated attribute sh0 on object', child.name || child.uuid, 'count=', origArray.length) } catch {}
-              return
-            }
-
-            // Fallback: if vertex counts match, copy directly
-            const pos = geom.attributes.position
-            if (pos && pos.count === cache.count) {
-              let outAttr = geom.attributes.sh0
-              if (!outAttr) {
-                const arr = new Float32Array(pos.count * 3)
-                geom.setAttribute('sh0', new THREE.BufferAttribute(arr, 3))
-                outAttr = geom.attributes.sh0
-              }
-              const out = outAttr.array
-              for (let i = 0; i < cache.count; i++) {
-                out[i * 3 + 0] = sh0[i * 3 + 0]
-                out[i * 3 + 1] = sh0[i * 3 + 1]
-                out[i * 3 + 2] = sh0[i * 3 + 2]
-              }
-              outAttr.needsUpdate = true
-              return
-            }
-          } catch (e) {
-            // ignore per-child errors
-          }
-        })
-      }
-
-      if (splatHighRef.current) applyTo(splatHighRef.current)
-      if (splatMedRef.current) applyTo(splatMedRef.current)
-      if (splatLowRef.current) applyTo(splatLowRef.current)
-      // Additionally, traverse the group itself (some builds attach meshes directly under the group)
-      if (groupRef.current) applyTo(groupRef.current)
-    } catch (e) {
-      // ignore
-    }
-  }
-
-  // Refresh cached geometry references after mesh rebuilds so in-place updates
-  // (like depth colormap) target the current live meshes.
-  const refreshMeshGeometryCache = (meshes: Array<any | null | undefined>) => {
-    try {
-      const cache = elementCacheRef.current
-      cache.meshGeometries = []
-      const collect = (obj: any) => {
-        if (!obj || !obj.traverse) return
-        obj.traverse((child: any) => {
-          try {
-            if (child && child.geometry) {
-              cache.meshGeometries!.push({ geom: child.geometry })
-            }
-          } catch (e) {}
-        })
-      }
-      meshes.forEach(collect)
-    } catch (e) {
-      // ignore
-    }
-  }
-
   const makeDepthRampModifier = (
     splatToView: SplatTransformer,
     minDepth: dyno.DynoVal<'float'>,
     maxDepth: dyno.DynoVal<'float'>,
+    stops: [number, number, number, number][],
   ) => {
     const { dynoBlock } = dyno
     const { splitGsplat, combineGsplat, Gsplat } = dyno
     const { normalizedDepth } = dyno
     const { split } = dyno
-    const { neg, clamp, mix } = dyno
+    const { neg, clamp, mix, sub, div } = dyno
+    const { and, greaterThanEqual, lessThanEqual, select } = dyno
     const { dynoConst } = dyno
 
     return dynoBlock({ gsplat: Gsplat }, { gsplat: Gsplat }, ({ gsplat }) => {
@@ -441,10 +204,29 @@ function Gaussians({
       let depth = normalizedDepth(neg(z), minDepth, maxDepth)
       depth = clamp(depth, dynoConst('float', 0), dynoConst('float', 1))
 
-      const r = mix(dynoConst('float', 0.0), dynoConst('float', 1.0), depth)
-      const g = mix(dynoConst('float', 0.4), dynoConst('float', 0.5), depth)
-      const b = mix(dynoConst('float', 1.0), dynoConst('float', 0.0), depth)
+      const buildFromStops = (segmentStops: [number, number, number, number][]) => {
+        let r: dyno.DynoVal<'float'> = dynoConst('float', segmentStops[0][1])
+        let g: dyno.DynoVal<'float'> = dynoConst('float', segmentStops[0][2])
+        let b: dyno.DynoVal<'float'> = dynoConst('float', segmentStops[0][3])
+        for (let i = 0; i < segmentStops.length - 1; i++) {
+          const [t0, r0, g0, b0] = segmentStops[i]
+          const [t1, r1, g1, b1] = segmentStops[i + 1]
+          const t0c = dynoConst('float', t0)
+          const t1c = dynoConst('float', t1)
+          const span = dynoConst('float', Math.max(1e-6, t1 - t0))
+          const local = clamp(div(sub(depth, t0c), span), dynoConst('float', 0), dynoConst('float', 1))
+          const segR = mix(dynoConst('float', r0), dynoConst('float', r1), local)
+          const segG = mix(dynoConst('float', g0), dynoConst('float', g1), local)
+          const segB = mix(dynoConst('float', b0), dynoConst('float', b1), local)
+          const inSeg = and(greaterThanEqual(depth, t0c), lessThanEqual(depth, t1c))
+          r = select(inSeg, segR, r)
+          g = select(inSeg, segG, g)
+          b = select(inSeg, segB, b)
+        }
+        return { r, g, b }
+      }
 
+      const { r, g, b } = buildFromStops(stops)
       return { gsplat: combineGsplat({ gsplat, r, g, b }) }
     })
   }
@@ -470,6 +252,10 @@ function Gaussians({
       const depthCenter = centerWorld.clone().sub(camPos).dot(camDir)
       let minDepth = depthCenter - worldRadius
       let maxDepth = depthCenter + worldRadius
+      const near = typeof camera.near === 'number' ? camera.near : 0.01
+      const far = typeof camera.far === 'number' ? camera.far : maxDepth
+      minDepth = Math.max(minDepth, near)
+      maxDepth = Math.min(maxDepth, far)
       if (minDepth === maxDepth) maxDepth = minDepth + 1e-3
       return { minDepth, maxDepth }
     } catch {
@@ -483,6 +269,16 @@ function Gaussians({
       uniform.value = value
       uniform.uniform.value = value
     }
+    const getActiveColorMap = (): ColormapId => {
+      try {
+        const vis = (window as any).__begira_visual_override?.[elementId]
+        return (vis && (vis.colorMap as ColormapId)) || DEFAULT_DEPTH_COLORMAP
+      } catch {
+        return DEFAULT_DEPTH_COLORMAP
+      }
+    }
+    const colorMapId = getActiveColorMap()
+    const colorMapDef: ColormapDef = COLORMAPS.find((c) => c.id === colorMapId) ?? COLORMAPS[0]
     const ensureModifier = (mesh: SplatMesh) => {
       const data = mesh.userData as any
       if (!data._depthRamp) {
@@ -492,9 +288,20 @@ function Gaussians({
         data._depthRamp = {
           minDepth: minDepthUniform,
           maxDepth: maxDepthUniform,
-          modifier: makeDepthRampModifier(mesh.context.worldToView, minDepthUniform, maxDepthUniform),
+          colorMapId: colorMapDef.id,
+          modifier: makeDepthRampModifier(mesh.context.worldToView, minDepthUniform, maxDepthUniform, colorMapDef.stops),
         }
         mesh.enableWorldToView = true
+        mesh.worldModifier = data._depthRamp.modifier
+        mesh.updateGenerator()
+      } else if (data._depthRamp.colorMapId !== colorMapDef.id) {
+        data._depthRamp.colorMapId = colorMapDef.id
+        data._depthRamp.modifier = makeDepthRampModifier(
+          mesh.context.worldToView,
+          data._depthRamp.minDepth,
+          data._depthRamp.maxDepth,
+          colorMapDef.stops,
+        )
         mesh.worldModifier = data._depthRamp.modifier
         mesh.updateGenerator()
       }
@@ -528,68 +335,8 @@ function Gaussians({
     clear(splatLowRef.current)
   }
 
-  // Throttle rebuild cooldown (ms) when cached geometries don't expose attributes
-  const REBUILD_COOLDOWN_MS = 500
-  const lastRebuildRef = useRef<number>(0)
-
-  // Fast synchronous depth computation placed here so it's in scope when called.
-  const computeDepthColorsSync = (cache: any, camPos: THREE.Vector3, camDir: THREE.Vector3, groupMatrix: THREE.Matrix4) => {
-    try {
-      const n = cache.count
-      if (!n || !cache.positions) return
-      const pos = cache.positions
-
-      // Reuse a depths buffer on the cache to avoid allocating every update
-      if (!cache._depths || cache._depths.length < n) cache._depths = new Float32Array(n)
-      const depths: Float32Array = cache._depths
-
-      const me = groupMatrix.elements
-      const m00 = me[0], m01 = me[4], m02 = me[8], m03 = me[12]
-      const m10 = me[1], m11 = me[5], m12 = me[9], m13 = me[13]
-      const m20 = me[2], m21 = me[6], m22 = me[10], m23 = me[14]
-
-      const cx = camPos.x, cy = camPos.y, cz = camPos.z
-      const dx = camDir.x, dy = camDir.y, dz = camDir.z
-
-      let minD = Number.POSITIVE_INFINITY
-      let maxD = Number.NEGATIVE_INFINITY
-      for (let i = 0; i < n; i++) {
-        const ix = pos[i * 3 + 0]
-        const iy = pos[i * 3 + 1]
-        const iz = pos[i * 3 + 2]
-        const wx = m00 * ix + m01 * iy + m02 * iz + m03
-        const wy = m10 * ix + m11 * iy + m12 * iz + m13
-        const wz = m20 * ix + m21 * iy + m22 * iz + m23
-        const d = (wx - cx) * dx + (wy - cy) * dy + (wz - cz) * dz
-        depths[i] = d
-        if (d < minD) minD = d
-        if (d > maxD) maxD = d
-      }
-      const range = Math.max(1e-6, maxD - minD)
-
-      const low0 = 0.0, low1 = 0.4, low2 = 1.0
-      const high0 = 1.0, high1 = 0.5, high2 = 0.0
-      // write directly into cache.sh0 so rebuilds use the latest colors
-      if (!cache.sh0 || cache.sh0.length !== n * 3) cache.sh0 = new Float32Array(n * 3)
-      const sh0 = cache.sh0 as Float32Array
-      for (let i = 0; i < n; i++) {
-        const t = Math.min(1, Math.max(0, (depths[i] - minD) / range))
-        sh0[i * 3 + 0] = low0 * (1 - t) + high0 * t
-        sh0[i * 3 + 1] = low1 * (1 - t) + high1 * t
-        sh0[i * 3 + 2] = low2 * (1 - t) + high2 * t
-      }
-
-      // Debug: indicate we computed depth colors (minimal log)
-      try { console.debug('[Gaussians] computeDepthColorsSync', elementId, 'minD=', minD, 'maxD=', maxD, 'count=', n) } catch {}
-
-      try { updateMeshesSh0FromCache() } catch (e) { try { console.debug('[Gaussians] updateMeshesSh0FromCache failed', elementId, e) } catch {} }
-    } catch (e) {
-      // ignore
-    }
-  }
-
   // Apply a visual override to the in-memory working cache. Supports: 'logged', 'solid', 'height', 'depth'
-  const applyVisualOverrideToCache = (mode: string, solidColorHex?: string) => {
+  const applyVisualOverrideToCache = (mode: string, solidColorHex?: string, colorMapId: ColormapId = DEFAULT_HEIGHT_COLORMAP) => {
     try {
       const decoded = (state as any).decoded
       if (!decoded || !decoded.geometry) return
@@ -676,18 +423,16 @@ function Gaussians({
           if (v > max) max = v
         }
         const range = Math.max(1e-6, max - min)
-        // gradient from blue-ish to orange-ish
-        const lowC = [0, 0.4, 1]
-        const highC = [1, 0.5, 0]
         if (!cache.working!.sh0) cache.working!.sh0 = new Float32Array(geomCount * 3)
         for (let i = 0; i < geomCount; i++) {
           tmpVec.set(cache.working!.positions[i * 3 + 0], cache.working!.positions[i * 3 + 1], cache.working!.positions[i * 3 + 2])
           tmpVec.applyMatrix4(group.matrixWorld)
           const v = tmpVec.dot(worldUp)
           const t = Math.min(1, Math.max(0, (v - min) / range))
-          cache.working!.sh0[i * 3 + 0] = lowC[0] * (1 - t) + highC[0] * t
-          cache.working!.sh0[i * 3 + 1] = lowC[1] * (1 - t) + highC[1] * t
-          cache.working!.sh0[i * 3 + 2] = lowC[2] * (1 - t) + highC[2] * t
+          const [r, g, b] = sampleColormap(colorMapId, t)
+          cache.working!.sh0[i * 3 + 0] = r
+          cache.working!.sh0[i * 3 + 1] = g
+          cache.working!.sh0[i * 3 + 2] = b
         }
         return
       }
@@ -793,8 +538,6 @@ function Gaussians({
           splatLowRef.current = newLow
         }
 
-        // Refresh geometry cache so per-frame updates target the new meshes.
-        refreshMeshGeometryCache([splatHighRef.current, splatMedRef.current, splatLowRef.current])
         try {
           const vis = (window as any).__begira_visual_override?.[elementId]
           if (vis && vis.colorMode === 'depth') applyDepthColorToMeshes()
@@ -871,8 +614,6 @@ function Gaussians({
         try { if (blobUrlRef.current.low && blobUrlRef.current.low !== blobUrlRef.current.high) URL.revokeObjectURL(blobUrlRef.current.low) } catch {}
         blobUrlRef.current.low = lowUrl
 
-        // Low LOD rebuild replaces geometry; refresh cached refs.
-        refreshMeshGeometryCache([splatHighRef.current, splatMedRef.current, splatLowRef.current])
         try {
           const vis = (window as any).__begira_visual_override?.[elementId]
           if (vis && vis.colorMode === 'depth') applyDepthColorToMeshes()
@@ -1052,23 +793,6 @@ function Gaussians({
                 const vis = anyWin.__begira_visual_override && anyWin.__begira_visual_override[elementId]
                 if (vis && vis.colorMode === 'depth') applyDepthColorToMeshes()
               } catch {}
-              // Inspect loaded mesh, cache any geometry references for in-place updates
-              try {
-                const cache = elementCacheRef.current
-                if (!cache.meshGeometries) cache.meshGeometries = []
-                const inspect = (obj: any) => {
-                  if (!obj) return
-                  obj.traverse((child: any) => {
-                    try {
-                      if (child && child.geometry) {
-                        try { console.debug('[Gaussians] onLoad found child geometry', child.name || child.uuid, Object.keys(child.geometry.attributes || {})) } catch {}
-                        cache.meshGeometries!.push({ geom: child.geometry })
-                      }
-                    } catch (e) {}
-                  })
-                }
-                inspect(splatHighRef.current)
-              } catch (e) {}
             },
             // @ts-ignore
             onError: (err: any) => console.error('[Gaussians] High LOD Error:', err),
@@ -1147,23 +871,6 @@ function Gaussians({
                 const vis = anyWin.__begira_visual_override && anyWin.__begira_visual_override[elementId]
                 if (vis && vis.colorMode === 'depth') applyDepthColorToMeshes()
               } catch {}
-              // cache geometries
-              try {
-                const cache = elementCacheRef.current
-                if (!cache.meshGeometries) cache.meshGeometries = []
-                const inspect = (obj: any) => {
-                  if (!obj) return
-                  obj.traverse((child: any) => {
-                    try {
-                      if (child && child.geometry) {
-                        try { console.debug('[Gaussians] onLoad (med) found child geometry', child.name || child.uuid, Object.keys(child.geometry.attributes || {})) } catch {}
-                        cache.meshGeometries!.push({ geom: child.geometry })
-                      }
-                    } catch (e) {}
-                  })
-                }
-                inspect(splatMedRef.current)
-              } catch (e) {}
             },
             // @ts-ignore
             onError: (err: any) => console.error('[Gaussians] Med LOD Error:', err),
@@ -1242,23 +949,6 @@ function Gaussians({
                 const vis = anyWin.__begira_visual_override && anyWin.__begira_visual_override[elementId]
                 if (vis && vis.colorMode === 'depth') applyDepthColorToMeshes()
               } catch {}
-              // cache geometries
-              try {
-                const cache = elementCacheRef.current
-                if (!cache.meshGeometries) cache.meshGeometries = []
-                const inspect = (obj: any) => {
-                  if (!obj) return
-                  obj.traverse((child: any) => {
-                    try {
-                      if (child && child.geometry) {
-                        try { console.debug('[Gaussians] onLoad (low) found child geometry', child.name || child.uuid, Object.keys(child.geometry.attributes || {})) } catch {}
-                        cache.meshGeometries!.push({ geom: child.geometry })
-                      }
-                    } catch (e) {}
-                  })
-                }
-                inspect(splatLowRef.current)
-              } catch (e) {}
             },
             // @ts-ignore
             onError: (err: any) => console.error('[Gaussians] Low LOD Error:', err),
@@ -1298,7 +988,8 @@ function Gaussians({
           applyVisualOverrideToCache('solid', hex)
         } else if (vis.colorMode === 'height') {
           clearDepthColorFromMeshes()
-          applyVisualOverrideToCache('height')
+          const cmap = (vis.colorMap as ColormapId) || DEFAULT_HEIGHT_COLORMAP
+          applyVisualOverrideToCache('height', undefined, cmap)
         } else if (vis.colorMode === 'depth') {
           applyDepthColorToMeshes()
           return
@@ -1380,6 +1071,16 @@ function Gaussians({
   useFrame(() => {
     const group = groupRef.current
     if (!group || !camera) return
+
+    const visibilityMap = (window as any).__begira_visibility || {}
+    const isVisible = visibilityMap[elementId] !== false
+    group.visible = isVisible
+    if (!isVisible) {
+      if (splatHighRef.current) splatHighRef.current.visible = false
+      if (splatMedRef.current) splatMedRef.current.visible = false
+      if (splatLowRef.current) splatLowRef.current.visible = false
+      return
+    }
 
     // Update depth ramp uniforms while in depth mode.
     try {

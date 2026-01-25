@@ -13,6 +13,7 @@ import {
   onPointerUpGesture,
 } from './interaction'
 import { useThree } from '@react-three/fiber'
+import { DEFAULT_DEPTH_COLORMAP, DEFAULT_HEIGHT_COLORMAP, buildColormapLUT, sampleColormapLUT, type ColormapId } from './colormaps'
 
 export type PointCloudRenderMode = 'fast' | 'circles' | 'quality'
 
@@ -44,6 +45,11 @@ function Cloud({
   const anyWin = typeof window !== 'undefined' ? (window as any) : ({} as any)
   const vis = anyWin.__begira_visual_override && anyWin.__begira_visual_override[cloudId]
   const colorMode: 'logged' | 'solid' | 'height' | 'depth' = (vis && vis.colorMode) || 'logged'
+  const defaultMap = colorMode === 'depth' ? DEFAULT_DEPTH_COLORMAP : DEFAULT_HEIGHT_COLORMAP
+  const colorMap: ColormapId = (vis && vis.colorMap) || defaultMap
+  const lut = useMemo(() => buildColormapLUT(colorMap, 256), [colorMap])
+  const visibilityMap = (window as any).__begira_visibility || {}
+  const isVisible = visibilityMap[cloudId] !== false
 
   // listen for inspector override changes so we re-render
   const [, setTick] = useState(0)
@@ -55,10 +61,12 @@ function Cloud({
     }
     try {
       window.addEventListener('begira_visual_override_changed', handler)
+      window.addEventListener('begira_visibility_changed', handler)
     } catch {}
     return () => {
       try {
         window.removeEventListener('begira_visual_override_changed', handler)
+        window.removeEventListener('begira_visibility_changed', handler)
       } catch {}
     }
   }, [cloudId])
@@ -117,19 +125,16 @@ function Cloud({
       }
       const range = Math.max(1e-6, maxH - minH)
 
-      // default gradient low->high colors (blue -> orange)
-      const low = [0.0, 0.4, 1.0]
-      const high = [1.0, 0.5, 0.0]
-
       const colors = new Float32Array(n * 3)
       for (let i = 0; i < n; i++) {
         v.set(pos.array[i * 3 + 0], pos.array[i * 3 + 1], pos.array[i * 3 + 2])
         worldPos.copy(v).applyMatrix4(m)
         const dot = worldPos.dot(authoredUpWorld)
         const t = Math.min(1, Math.max(0, (dot - minH) / range))
-        colors[i * 3] = low[0] * (1 - t) + high[0] * t
-        colors[i * 3 + 1] = low[1] * (1 - t) + high[1] * t
-        colors[i * 3 + 2] = low[2] * (1 - t) + high[2] * t
+        const [r, g, b] = sampleColormapLUT(lut, t)
+        colors[i * 3] = r
+        colors[i * 3 + 1] = g
+        colors[i * 3 + 2] = b
       }
 
       // store original color attribute if present so we can restore later
@@ -147,7 +152,7 @@ function Cloud({
   useEffect(() => {
     computeHeightColors()
     // recompute once when geometry or camera reference changes
-  }, [colorMode, (state as any).decoded?.geometry, camera])
+  }, [colorMode, colorMap, lut, (state as any).decoded?.geometry, camera])
 
   // Also recompute periodically during frames while in height mode so gradient follows camera movement
   const frameCounter = useRef(0)
@@ -184,7 +189,7 @@ function Cloud({
       // clear the stored original marker so future height toggles re-capture if needed
       delete geom.userData._orig_color
     } catch (e) {}
-  }, [colorMode, (state as any).decoded?.geometry])
+  }, [colorMode, colorMap, lut, (state as any).decoded?.geometry])
 
   // For depth mode we compute colors on the CPU and throttle updates
   const lastDepthUpdateRef = useRef<number>(0)
@@ -212,7 +217,7 @@ function Cloud({
         computeDepthColors()
       } catch {}
     }
-  }, [colorMode, (state as any).decoded?.geometry])
+  }, [colorMode, colorMap, lut, (state as any).decoded?.geometry])
 
   // We now compute depth colors on the CPU and write a color attribute, so we don't need
   // the previous shader-based depth injection. Leave onBeforeCompile as a no-op.
@@ -281,18 +286,16 @@ function Cloud({
       }
       const range = Math.max(1e-6, maxD - minD)
 
-      // build color array for all points using the estimated range
-      const low = [0.0, 0.4, 1.0]
-      const high = [1.0, 0.5, 0.0]
       const colors = new Float32Array(n * 3)
       for (let i = 0; i < n; i++) {
         v.set(pos.array[i * 3 + 0], pos.array[i * 3 + 1], pos.array[i * 3 + 2])
         mv.set(v.x, v.y, v.z, 1.0).applyMatrix4(modelView)
         const d = -mv.z - centerDepth
         const t = Math.min(1, Math.max(0, (d - minD) / range))
-        colors[i * 3] = low[0] * (1 - t) + high[0] * t
-        colors[i * 3 + 1] = low[1] * (1 - t) + high[1] * t
-        colors[i * 3 + 2] = low[2] * (1 - t) + high[2] * t
+        const [r, g, b] = sampleColormapLUT(lut, t)
+        colors[i * 3] = r
+        colors[i * 3 + 1] = g
+        colors[i * 3 + 2] = b
       }
 
       geom.setAttribute('color', new THREE.BufferAttribute(colors, 3))
@@ -312,6 +315,7 @@ function Cloud({
   return (
     <points
       ref={pointsRef}
+      visible={isVisible}
       geometry={state.decoded.geometry}
       // IMPORTANT: raycasting against large THREE.Points can become extremely expensive,
       // especially while moving the camera (pointer events trigger raycasts internally).
