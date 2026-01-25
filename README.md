@@ -1,6 +1,6 @@
-# begira
+# begira (WIP)
 
-Minimal 3D point‑cloud and Gaussian splat viewer with a Python API and a React/Three.js frontend.
+Minimal 3D viewer with a Python API and a React/Three.js frontend.
 
 ## Features
 - Point clouds and Gaussian splats with orbit controls
