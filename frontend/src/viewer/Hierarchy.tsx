@@ -51,7 +51,7 @@ export default function Hierarchy({ elements, selectedId, onSelect, onFocus }: H
         <div style={{ marginTop: 10, fontSize: 12, opacity: 0.65 }}>(nothing selected)</div>
       )}
 
-      <div style={{ marginTop: 14, fontSize: 12, opacity: 0.65 }}>Tip: Click to select, double-click to focus the camera.</div>
+      <div style={{ marginTop: 14, fontSize: 12, opacity: 0.65 }}>Tip: click to select, double-click to focus the camera.</div>
     </div>
   )
 }

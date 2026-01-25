@@ -18,6 +18,11 @@ export default function Inspector({ selected }: Props) {
   // LOD override state
   const [lodOverride, setLodOverride] = useState<string | undefined>(undefined)
 
+  // Visual override state (client-only preview)
+  type ColorMode = 'logged' | 'solid' | 'height' | 'depth'
+  const [colorMode, setColorMode] = useState<ColorMode>('logged')
+  const [solidColor, setSolidColor] = useState<string>('#ff8a33') // hex string for input[type=color]
+
   useEffect(() => {
     setErr(null)
     lastSent.current = null
@@ -41,6 +46,23 @@ export default function Inspector({ selected }: Props) {
       const anyWin = window as any
       const lod = (anyWin.__begira_lod_override && anyWin.__begira_lod_override[selected.id]) ?? undefined
       setLodOverride(lod)
+      // visual override (client-only)
+      const vis = anyWin.__begira_visual_override && anyWin.__begira_visual_override[selected.id]
+      if (vis) {
+        setColorMode(vis.colorMode ?? 'logged')
+        if (vis.solidColor) {
+          // assume [r,g,b] floats 0..1
+          const c = vis.solidColor
+          function toHex(x: number) {
+            const v = Math.round(Math.max(0, Math.min(1, x)) * 255)
+            return v.toString(16).padStart(2, '0')
+          }
+          const hex = '#' + toHex(c[0]) + toHex(c[1]) + toHex(c[2])
+          setSolidColor(hex)
+        }
+      } else {
+        setColorMode('logged')
+      }
     } catch {}
   }, [selected?.id, isPointCloud, isGaussians])
 
@@ -75,6 +97,37 @@ export default function Inspector({ selected }: Props) {
       if (v === undefined) delete anyWin.__begira_lod_override[id]
       else anyWin.__begira_lod_override[id] = v
       // Also publish to apply function to ensure visibility updates (no-op, kept for backward compat)
+    } catch {}
+  }
+
+  const setVisualOverrideForElement = (id: string, mode: ColorMode, hexColor?: string | null) => {
+    try {
+      const anyWin = window as any
+      anyWin.__begira_visual_override = anyWin.__begira_visual_override || {}
+      if (mode === 'logged') {
+        // clear override
+        delete anyWin.__begira_visual_override[id]
+      } else {
+        const obj: any = { colorMode: mode }
+        if (mode === 'solid' && hexColor) {
+          // convert #rrggbb to [r,g,b] floats
+          const c = hexColor.replace('#', '')
+          const r = parseInt(c.substring(0, 2), 16) / 255
+          const g = parseInt(c.substring(2, 4), 16) / 255
+          const b = parseInt(c.substring(4, 6), 16) / 255
+          obj.solidColor = [r, g, b]
+        }
+        anyWin.__begira_visual_override[id] = obj
+      }
+      // notify viewers to re-read overrides and re-render
+      try {
+        if (typeof window !== 'undefined' && (window as any).dispatchEvent) {
+          // debug log
+          try { console.debug('[Inspector] visual override set', id, anyWin.__begira_visual_override[id]) } catch {}
+          const ev = new CustomEvent('begira_visual_override_changed', { detail: { id } })
+          window.dispatchEvent(ev)
+        }
+      } catch {}
     } catch {}
   }
 
@@ -139,6 +192,53 @@ export default function Inspector({ selected }: Props) {
             />
           </div>
           <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>{busy ? 'Updating…' : ' '}</div>
+        </div>
+      )}
+
+      {(isPointCloud || isGaussians) && (
+        <div style={{ marginTop: 14 }}>
+          <label style={{ display: 'block', fontSize: 12, opacity: 0.9 }}>Color</label>
+
+          <div style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>Mode</div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 6, flexWrap: 'wrap' }}>
+            {(['logged', 'solid', 'height', 'depth'] as ColorMode[]).map((v) => {
+              const active = colorMode === v
+              return (
+                <button
+                  key={v}
+                  onClick={() => {
+                    setColorMode(v)
+                    setVisualOverrideForElement(selected.id, v, solidColor)
+                  }}
+                  style={{
+                    padding: '6px 8px',
+                    borderRadius: 6,
+                    border: '1px solid rgba(255,255,255,0.06)',
+                    background: active ? 'rgba(255,255,255,0.06)' : 'transparent',
+                    color: '#e8ecff',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {v}
+                </button>
+              )
+            })}
+          </div>
+
+          {colorMode === 'solid' && (
+            <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'center' }}>
+              <input
+                aria-label="Solid color"
+                type="color"
+                value={solidColor}
+                onChange={(e) => {
+                  setSolidColor(e.target.value)
+                  setVisualOverrideForElement(selected.id, 'solid', e.target.value)
+                }}
+              />
+              <div style={{ fontSize: 12, opacity: 0.8 }}>{solidColor}</div>
+            </div>
+          )}
         </div>
       )}
 
