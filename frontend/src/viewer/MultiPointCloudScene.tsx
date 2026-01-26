@@ -4,14 +4,6 @@ import { useState } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { getCircleSpriteTexture } from './spriteCircle'
 import { usePointCloud } from './usePointCloud'
-import {
-  createClickGesture,
-  isClickGesture,
-  isDoubleClick,
-  onPointerDownGesture,
-  onPointerMoveGesture,
-  onPointerUpGesture,
-} from './interaction'
 import { useThree } from '@react-three/fiber'
 import { DEFAULT_DEPTH_COLORMAP, DEFAULT_HEIGHT_COLORMAP, buildColormapLUT, sampleColormapLUT, type ColormapId } from './colormaps'
 
@@ -35,13 +27,12 @@ function Cloud({
   const state = usePointCloud(cloudId)
   const circleMap = useMemo(() => getCircleSpriteTexture(), [])
 
-  const gesture = useRef(createClickGesture())
-  const lastClickMs = useRef<number | null>(null)
-
-  useEffect(() => {
-    gesture.current = createClickGesture()
-    lastClickMs.current = null
-  }, [cloudId])
+  // Note: selection uses onClick/onDoubleClick to avoid custom gesture logic.
+  const onClickSelect = (e: any) => {
+    e.stopPropagation()
+    onSelect(cloudId)
+    if (e.detail === 2) onFocus(cloudId)
+  }
 
   // read visual override from window globals
   const anyWin = typeof window !== 'undefined' ? (window as any) : ({} as any)
@@ -52,7 +43,6 @@ function Cloud({
   const lut = useMemo(() => buildColormapLUT(colorMap, 256), [colorMap])
   const meta = state.status === 'ready' ? state.meta : null
   const isVisible = meta && meta.visible !== undefined ? !!meta.visible : true
-
   // listen for inspector override changes so we re-render
   const [, setTick] = useState(0)
   useEffect(() => {
@@ -339,64 +329,37 @@ function Cloud({
   const baseSize = Math.max(0.001, state.meta.pointSize ?? 0.02)
   const fast = renderMode === 'fast'
   const circles = renderMode === 'circles'
-
   return (
     <group ref={groupRef} visible={isVisible}>
       <points
         ref={pointsRef}
         geometry={state.decoded.geometry}
-      // IMPORTANT: raycasting against large THREE.Points can become extremely expensive,
-      // especially while moving the camera (pointer events trigger raycasts internally).
-      // We disable it to keep interaction smooth for large point clouds.
-      raycast={() => null}
-      onPointerDown={(e) => {
-        onPointerDownGesture(gesture.current, e.nativeEvent)
-      }}
-      onPointerMove={(e) => {
-        onPointerMoveGesture(gesture.current, e.nativeEvent)
-      }}
-      onPointerUp={(e) => {
-        const wasClick = isClickGesture(gesture.current, e.nativeEvent)
-        onPointerUpGesture(gesture.current)
-        if (!wasClick) return
-
-        e.stopPropagation()
-
-        const now = performance.now()
-        const dbl = isDoubleClick(now, lastClickMs.current)
-        lastClickMs.current = now
-
-        // If it's already selected and it's just a single click, do nothing.
-        // This avoids re-triggering any selection/focus side-effects that can reset camera.
-        if (!dbl && selected) return
-
-        onSelect(cloudId)
-        if (dbl) onFocus(cloudId)
-      }}
+        onClick={onClickSelect}
+        onDoubleClick={onClickSelect}
       >
         <pointsMaterial
-        ref={materialRef}
-        // 'fast'  : opaque square points (fastest)
-        // 'circles': opaque circle sprites via alphaTest (still fast, no blending)
-        // 'quality': transparent blended sprites (prettiest, slowest)
-        size={fast ? Math.max(0.001, baseSize * 0.75) : baseSize}
-        sizeAttenuation
-        // Vertex colors depend on effective visual mode. For 'logged' prefer payload colors;
-        // for 'height' and 'depth' we create a color attribute above; for 'solid' disable vertexColors.
-        vertexColors={colorMode === 'solid' ? false : ((state as any).decoded?.hasColor || colorMode === 'height' || colorMode === 'depth')}
-        map={circles || renderMode === 'quality' ? circleMap : null}
-        alphaTest={circles ? 0.5 : fast ? 0.0 : 0.05}
-        transparent={renderMode === 'quality'}
-        opacity={renderMode === 'quality' ? (selected ? 0.9 : 0.6) : 1.0}
-        depthWrite={renderMode !== 'quality'}
-        depthTest
-        blending={renderMode === 'quality' ? THREE.NormalBlending : THREE.NoBlending}
-        // apply solid color when requested
-        color={colorMode === 'solid' && vis && vis.solidColor ? new THREE.Color(vis.solidColor[0], vis.solidColor[1], vis.solidColor[2]) : undefined}
-        // ensure material recompiles when mode changes (depth shader injection)
-        key={colorMode}
-        // onBeforeCompile to inject depth-based coloring when requested
-        onBeforeCompile={onBeforeCompile}
+          ref={materialRef}
+          // 'fast'  : opaque square points (fastest)
+          // 'circles': opaque circle sprites via alphaTest (still fast, no blending)
+          // 'quality': transparent blended sprites (prettiest, slowest)
+          size={fast ? Math.max(0.001, baseSize * 0.75) : baseSize}
+          sizeAttenuation
+          // Vertex colors depend on effective visual mode. For 'logged' prefer payload colors;
+          // for 'height' and 'depth' we create a color attribute above; for 'solid' disable vertexColors.
+          vertexColors={colorMode === 'solid' ? false : ((state as any).decoded?.hasColor || colorMode === 'height' || colorMode === 'depth')}
+          map={circles || renderMode === 'quality' ? circleMap : null}
+          alphaTest={circles ? 0.5 : fast ? 0.0 : 0.05}
+          transparent={renderMode === 'quality'}
+          opacity={renderMode === 'quality' ? (selected ? 0.9 : 0.6) : 1.0}
+          depthWrite={renderMode !== 'quality'}
+          depthTest
+          blending={renderMode === 'quality' ? THREE.NormalBlending : THREE.NoBlending}
+          // apply solid color when requested
+          color={colorMode === 'solid' && vis && vis.solidColor ? new THREE.Color(vis.solidColor[0], vis.solidColor[1], vis.solidColor[2]) : undefined}
+          // ensure material recompiles when mode changes (depth shader injection)
+          key={colorMode}
+          // onBeforeCompile to inject depth-based coloring when requested
+          onBeforeCompile={onBeforeCompile}
         />
       </points>
     </group>
