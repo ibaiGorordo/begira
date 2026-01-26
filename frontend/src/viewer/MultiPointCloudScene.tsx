@@ -64,6 +64,7 @@ function Cloud({
   const { camera } = useThree()
   const pointsRef = useRef<THREE.Points | null>(null)
   const groupRef = useRef<THREE.Group | null>(null)
+  const centerRef = useRef(new THREE.Vector3())
 
   useEffect(() => {
     if (!onRegisterObject) return
@@ -74,11 +75,28 @@ function Cloud({
   }, [cloudId, onRegisterObject, state.status])
 
   useEffect(() => {
+    if (state.status !== 'ready') return
+    const center = state.decoded.bounds.min.clone().add(state.decoded.bounds.max).multiplyScalar(0.5)
+    centerRef.current.copy(center)
+    if (pointsRef.current) {
+      pointsRef.current.position.set(-center.x, -center.y, -center.z)
+    }
+    if (groupRef.current) {
+      groupRef.current.userData = { ...(groupRef.current.userData ?? {}), centerOffset: center.clone() }
+    }
+    if (meta && groupRef.current && !(window as any).__begira_local_pose?.[cloudId]) {
+      const pos = meta.position ?? [0, 0, 0]
+      groupRef.current.position.set(pos[0] + center.x, pos[1] + center.y, pos[2] + center.z)
+    }
+  }, [state.status, state.status === 'ready' ? state.decoded.bounds : null, meta, cloudId])
+
+  useEffect(() => {
     if (!meta || !groupRef.current) return
     if ((window as any).__begira_local_pose?.[cloudId]) return
     const pos = meta.position ?? [0, 0, 0]
     const rot = meta.rotation ?? [0, 0, 0, 1]
-    groupRef.current.position.set(pos[0], pos[1], pos[2])
+    const c = centerRef.current
+    groupRef.current.position.set(pos[0] + c.x, pos[1] + c.y, pos[2] + c.z)
     groupRef.current.quaternion.set(rot[0], rot[1], rot[2], rot[3]).normalize()
   }, [meta])
 
@@ -172,7 +190,8 @@ function Cloud({
         const key = `${local.position.join(',')}|${local.rotation.join(',')}`
         if (lastLocalPoseRef.current !== key) {
           lastLocalPoseRef.current = key
-          groupRef.current.position.set(local.position[0], local.position[1], local.position[2])
+          const c = centerRef.current
+          groupRef.current.position.set(local.position[0] + c.x, local.position[1] + c.y, local.position[2] + c.z)
           groupRef.current.quaternion.set(local.rotation[0], local.rotation[1], local.rotation[2], local.rotation[3]).normalize()
         }
       }
@@ -331,11 +350,19 @@ function Cloud({
   const baseSize = Math.max(0.001, state.meta.pointSize ?? 0.02)
   const fast = renderMode === 'fast'
   const circles = renderMode === 'circles'
+  const handleRaycast = (raycaster: THREE.Raycaster, intersects: THREE.Intersection[]) => {
+    if (!pointsRef.current) return
+    const prev = raycaster.params.Points.threshold
+    raycaster.params.Points.threshold = Math.max(0.005, baseSize * 0.5)
+    THREE.Points.prototype.raycast.call(pointsRef.current, raycaster, intersects)
+    raycaster.params.Points.threshold = prev
+  }
   return (
     <group ref={groupRef} visible={isVisible}>
       <points
         ref={pointsRef}
         geometry={state.decoded.geometry}
+        raycast={handleRaycast}
         onClick={onClickSelect}
         onDoubleClick={onClickSelect}
       >

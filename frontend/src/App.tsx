@@ -240,21 +240,6 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [])
 
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase()
-      if (tag === 'input' || tag === 'textarea' || (e.target as HTMLElement | null)?.isContentEditable) return
-      const key = e.key.toLowerCase()
-      if (key === 't') {
-        setTransformMode('translate')
-      } else if (key === 'r') {
-        setTransformMode('rotate')
-      }
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
-
   const applyVisibility = async (id: string, visible: boolean) => {
     const prev = elements?.find((e) => e.id === id)
     await runUserAction({
@@ -412,7 +397,52 @@ export default function App() {
         {error && <span style={{ color: 'crimson' }}>{error}</span>}
       </div>
 
-      <div className="viewer" style={{ display: 'flex', flex: 1, minHeight: 0, background: '#0b1020' }}>
+      <div className="viewer" style={{ display: 'flex', flex: 1, minHeight: 0, background: '#0b1020', position: 'relative' }}>
+        <div
+          style={{
+            position: 'absolute',
+            top: 10,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            display: 'flex',
+            gap: 6,
+            padding: '6px 8px',
+            borderRadius: 999,
+            border: '1px solid #1b2235',
+            background: 'rgba(11, 16, 32, 0.9)',
+            color: '#e8ecff',
+            zIndex: 5,
+          }}
+        >
+          <button
+            onClick={() => setTransformMode('translate')}
+            style={{
+              padding: '4px 8px',
+              borderRadius: 999,
+              border: '1px solid #1b2235',
+              background: transformMode === 'translate' ? '#172242' : '#0f1630',
+              color: '#e8ecff',
+              cursor: 'pointer',
+              fontSize: 12,
+            }}
+          >
+            Move
+          </button>
+          <button
+            onClick={() => setTransformMode('rotate')}
+            style={{
+              padding: '4px 8px',
+              borderRadius: 999,
+              border: '1px solid #1b2235',
+              background: transformMode === 'rotate' ? '#172242' : '#0f1630',
+              color: '#e8ecff',
+              cursor: 'pointer',
+              fontSize: 12,
+            }}
+          >
+            Rotate
+          </button>
+        </div>
         {leftOpen && (
           <div style={{ borderRight: '1px solid #1b2235', background: '#0f1630', color: '#e8ecff' }}>
             <Hierarchy

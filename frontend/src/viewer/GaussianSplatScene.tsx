@@ -34,8 +34,10 @@ function Gaussians({
     if ((window as any).__begira_local_pose?.[elementId]) return
     const pos = meta.position ?? [0, 0, 0]
     const rot = meta.rotation ?? [0, 0, 0, 1]
-    groupRef.current.position.set(pos[0], pos[1], pos[2])
+    const c = centerOffsetRef.current
+    groupRef.current.position.set(pos[0] + c.x, pos[1] + c.y, pos[2] + c.z)
     groupRef.current.quaternion.set(rot[0], rot[1], rot[2], rot[3]).normalize()
+    groupRef.current.userData = { ...(groupRef.current.userData ?? {}), centerOffset: c.clone() }
   }, [meta])
   const { camera, size } = useThree()
   // We'll keep two meshes for simple LOD switching
@@ -45,6 +47,12 @@ function Gaussians({
   const blobUrlRef = useRef<{ high?: string; low?: string }>({})
   const loadingRef = useRef(false)
   const boundingSphereRef = useRef<THREE.Sphere | null>(null)
+  const centerOffsetRef = useRef(new THREE.Vector3())
+  const applyCenterOffsetToMesh = (mesh: THREE.Object3D | null) => {
+    if (!mesh) return
+    const c = centerOffsetRef.current
+    mesh.position.set(-c.x, -c.y, -c.z)
+  }
 
   // NEW: in-memory cache of per-element decoded arrays so we can mutate colors/pose before building blobs
   const elementCacheRef = useRef<{
@@ -492,6 +500,7 @@ function Gaussians({
               onLoad: () => resolve(m),
               onError: (err: any) => reject(err),
             })
+            applyCenterOffsetToMesh(m)
             m.visible = false
             parent.add(m)
           } catch (e) {
@@ -606,6 +615,7 @@ function Gaussians({
               onLoad: () => resolve(m),
               onError: (err: any) => reject(err),
             })
+            applyCenterOffsetToMesh(m)
             m.visible = false
             parent.add(m)
           } catch (e) { reject(e) }
@@ -736,9 +746,19 @@ function Gaussians({
               if (d2 > maxSq) maxSq = d2
             }
             boundingSphereRef.current = new THREE.Sphere(new THREE.Vector3(cx, cy, cz), Math.sqrt(maxSq))
+            centerOffsetRef.current.set(cx, cy, cz)
+            boundingSphereRef.current.center.set(0, 0, 0)
+            if (splatHighRef.current) splatHighRef.current.position.set(-cx, -cy, -cz)
+            if (splatMedRef.current) splatMedRef.current.position.set(-cx, -cy, -cz)
+            if (splatLowRef.current) splatLowRef.current.position.set(-cx, -cy, -cz)
+            if (meta && groupRef.current) {
+              groupRef.current.position.set((meta.position?.[0] ?? 0) + cx, (meta.position?.[1] ?? 0) + cy, (meta.position?.[2] ?? 0) + cz)
+              groupRef.current.userData = { ...(groupRef.current.userData ?? {}), centerOffset: centerOffsetRef.current.clone() }
+            }
           } catch (e) {
             // ignore failures, optional optimization
             boundingSphereRef.current = null
+            centerOffsetRef.current.set(0, 0, 0)
           }
         }
 
@@ -816,6 +836,7 @@ function Gaussians({
             // @ts-ignore
             onError: (err: any) => console.error('[Gaussians] High LOD Error:', err),
           })
+          applyCenterOffsetToMesh(splatHighRef.current)
           splatHighRef.current.visible = false
           groupRef.current!.add(splatHighRef.current)
         }
@@ -894,6 +915,7 @@ function Gaussians({
             // @ts-ignore
             onError: (err: any) => console.error('[Gaussians] Med LOD Error:', err),
           })
+          applyCenterOffsetToMesh(splatMedRef.current)
           splatMedRef.current.visible = false
           groupRef.current!.add(splatMedRef.current)
         }
@@ -972,6 +994,7 @@ function Gaussians({
             // @ts-ignore
             onError: (err: any) => console.error('[Gaussians] Low LOD Error:', err),
           })
+          applyCenterOffsetToMesh(splatLowRef.current)
           splatLowRef.current.visible = false
           groupRef.current!.add(splatLowRef.current)
         }
@@ -1099,7 +1122,8 @@ function Gaussians({
         const key = `${local.position.join(',')}|${local.rotation.join(',')}`
         if (lastLocalPoseRef.current !== key) {
           lastLocalPoseRef.current = key
-          group.position.set(local.position[0], local.position[1], local.position[2])
+          const c = centerOffsetRef.current
+          group.position.set(local.position[0] + c.x, local.position[1] + c.y, local.position[2] + c.z)
           group.quaternion.set(local.rotation[0], local.rotation[1], local.rotation[2], local.rotation[3]).normalize()
         }
       }

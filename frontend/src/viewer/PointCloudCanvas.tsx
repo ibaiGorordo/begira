@@ -561,6 +561,10 @@ export default function PointCloudCanvas({
             if (!selectedId || !selectedObject) return
             const pos = selectedObject.position
             const quat = selectedObject.quaternion
+            const offset = (selectedObject as any).userData?.centerOffset as THREE.Vector3 | undefined
+            const ox = offset?.x ?? 0
+            const oy = offset?.y ?? 0
+            const oz = offset?.z ?? 0
             const qLen = Math.hypot(quat.x, quat.y, quat.z, quat.w) || 1
             const rotation: [number, number, number, number] = [
               quat.x / qLen,
@@ -569,9 +573,9 @@ export default function PointCloudCanvas({
               quat.w / qLen,
             ]
             const payload: [number, number, number, number, number, number, number] = [
-              pos.x,
-              pos.y,
-              pos.z,
+              pos.x - ox,
+              pos.y - oy,
+              pos.z - oz,
               rotation[0],
               rotation[1],
               rotation[2],
@@ -584,12 +588,12 @@ export default function PointCloudCanvas({
               const anyWin = window as any
               if (!anyWin.__begira_local_pose) anyWin.__begira_local_pose = {}
               anyWin.__begira_local_pose[selectedId] = {
-                position: [pos.x, pos.y, pos.z],
+                position: [pos.x - ox, pos.y - oy, pos.z - oz],
                 rotation,
               }
               window.dispatchEvent(
                 new CustomEvent('begira_local_pose_changed', {
-                  detail: { id: selectedId, position: [pos.x, pos.y, pos.z], rotation },
+                  detail: { id: selectedId, position: [pos.x - ox, pos.y - oy, pos.z - oz], rotation },
                 }),
               )
             } catch {}
@@ -601,10 +605,14 @@ export default function PointCloudCanvas({
             if (orbitRef.current) orbitRef.current.enabled = true
             const pos = selectedObject.position
             const quat = selectedObject.quaternion
+            const offset = (selectedObject as any).userData?.centerOffset as THREE.Vector3 | undefined
+            const ox = offset?.x ?? 0
+            const oy = offset?.y ?? 0
+            const oz = offset?.z ?? 0
             const payload: [number, number, number, number, number, number, number] = [
-              pos.x,
-              pos.y,
-              pos.z,
+              pos.x - ox,
+              pos.y - oy,
+              pos.z - oz,
               quat.x,
               quat.y,
               quat.z,
@@ -613,7 +621,7 @@ export default function PointCloudCanvas({
             const key = payload.map((v) => v.toFixed(6)).join(',')
             if (lastTransformRef.current === key) return
             lastTransformRef.current = key
-            onTransformCommit(selectedId!, [pos.x, pos.y, pos.z], [quat.x, quat.y, quat.z, quat.w])
+            onTransformCommit(selectedId!, [pos.x - ox, pos.y - oy, pos.z - oz], [quat.x, quat.y, quat.z, quat.w])
           }}
         />
       )}
