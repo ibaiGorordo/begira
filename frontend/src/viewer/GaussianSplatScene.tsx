@@ -10,14 +10,31 @@ function Gaussians({
   selected: _selected,
   onSelect,
   onFocus,
+  onRegisterObject,
 }: {
   elementId: string
   selected: boolean
   onSelect: (id: string | null) => void
   onFocus: (id: string) => void
+  onRegisterObject?: (id: string, obj: THREE.Object3D | null) => void
 }) {
   const state = useGaussians(elementId)
+  const meta = state.status === 'ready' ? state.meta : null
   const groupRef = useRef<THREE.Group>(null)
+  useEffect(() => {
+    if (!onRegisterObject) return
+    onRegisterObject(elementId, groupRef.current)
+    return () => onRegisterObject(elementId, null)
+  }, [elementId, onRegisterObject])
+
+  useEffect(() => {
+    if (!meta || !groupRef.current) return
+    if ((window as any).__begira_local_pose?.[elementId]) return
+    const pos = meta.position ?? [0, 0, 0]
+    const rot = meta.rotation ?? [0, 0, 0, 1]
+    groupRef.current.position.set(pos[0], pos[1], pos[2])
+    groupRef.current.quaternion.set(rot[0], rot[1], rot[2], rot[3]).normalize()
+  }, [meta])
   const { camera, size } = useThree()
   // We'll keep two meshes for simple LOD switching
   const splatHighRef = useRef<SplatMesh | null>(null)
@@ -1067,13 +1084,26 @@ function Gaussians({
   // Throttle updates for depth-colormap mode so it reacts to camera moves
   const lastDepthUpdateRef = useRef<number>(0)
   const DEPTH_UPDATE_MS = 33
+  const lastLocalPoseRef = useRef<string | null>(null)
+  const lastChosenRef = useRef<'high' | 'medium' | 'low'>('low')
 
   useFrame(() => {
     const group = groupRef.current
     if (!group || !camera) return
 
-    const visibilityMap = (window as any).__begira_visibility || {}
-    const isVisible = visibilityMap[elementId] !== false
+    try {
+      const local = (window as any).__begira_local_pose?.[elementId]
+      if (local && local.position && local.rotation) {
+        const key = `${local.position.join(',')}|${local.rotation.join(',')}`
+        if (lastLocalPoseRef.current !== key) {
+          lastLocalPoseRef.current = key
+          group.position.set(local.position[0], local.position[1], local.position[2])
+          group.quaternion.set(local.rotation[0], local.rotation[1], local.rotation[2], local.rotation[3]).normalize()
+        }
+      }
+    } catch {}
+
+    const isVisible = meta ? meta.visible !== false : true
     group.visible = isVisible
     if (!isVisible) {
       if (splatHighRef.current) splatHighRef.current.visible = false
@@ -1094,6 +1124,14 @@ function Gaussians({
       }
     } catch (e) {
       // ignore
+    }
+
+    const hasLocalPose = !!(window as any).__begira_local_pose?.[elementId]
+    if (hasLocalPose) {
+      if (splatHighRef.current) splatHighRef.current.visible = lastChosenRef.current === 'high'
+      if (splatMedRef.current) splatMedRef.current.visible = lastChosenRef.current === 'medium'
+      if (splatLowRef.current) splatLowRef.current.visible = lastChosenRef.current === 'low'
+      return
     }
 
     frameCounter.current = (frameCounter.current + 1) % FRAME_THROTTLE
@@ -1183,6 +1221,7 @@ function Gaussians({
       else chosen = 'low'
     }
 
+    lastChosenRef.current = chosen
     if (splatHighRef.current) splatHighRef.current.visible = chosen === 'high'
     if (splatMedRef.current) splatMedRef.current.visible = chosen === 'medium'
     if (splatLowRef.current) splatLowRef.current.visible = chosen === 'low'
@@ -1211,11 +1250,13 @@ export default function GaussianSplatScene({
   selectedId,
   onSelect,
   onFocus,
+  onRegisterObject,
 }: {
   elementIds: string[]
   selectedId: string | null
   onSelect: (id: string | null) => void
   onFocus: (id: string) => void
+  onRegisterObject?: (id: string, obj: THREE.Object3D | null) => void
 }) {
   return (
     <>
@@ -1226,6 +1267,7 @@ export default function GaussianSplatScene({
           selected={id === selectedId}
           onSelect={onSelect}
           onFocus={onFocus}
+          onRegisterObject={onRegisterObject}
         />
       ))}
     </>

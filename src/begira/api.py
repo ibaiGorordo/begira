@@ -34,6 +34,11 @@ def create_api_app() -> FastAPI:
         # Minimal polling endpoint.
         return {"globalRevision": REGISTRY.global_revision()}
 
+    @app.post("/api/reset")
+    def reset_project() -> dict[str, bool]:
+        REGISTRY.reset()
+        return {"ok": True}
+
     @app.get("/api/viewer/settings")
     def get_viewer_settings() -> dict:
         s = VIEWER_SETTINGS.get()

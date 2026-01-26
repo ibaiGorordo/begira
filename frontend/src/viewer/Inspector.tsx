@@ -1,20 +1,50 @@
 import { useEffect, useRef, useState } from 'react'
+import * as THREE from 'three'
 import type { ElementInfo } from './api'
-import { fetchPointCloudElementMeta, fetchGaussianElementMeta, updatePointCloudSettings } from './api'
+import {
+  fetchPointCloudElementMeta,
+  fetchGaussianElementMeta,
+  fetchCameraElementMeta,
+  fetchElementMeta,
+  updatePointCloudSettings,
+  updateElementMeta,
+  deleteElement,
+} from './api'
 import { COLORMAPS, DEFAULT_DEPTH_COLORMAP, DEFAULT_HEIGHT_COLORMAP, type ColormapId } from './colormaps'
 
 type Props = {
   selected: ElementInfo | null
+  activeCameraId: string | null
+  onSetActiveCamera: (id: string | null) => void
+  onDelete: (id: string) => void
+  transformMode: 'translate' | 'rotate'
+  onTransformModeChange: (mode: 'translate' | 'rotate') => void
+  onPoseCommit: (id: string, position: [number, number, number], rotation: [number, number, number, number]) => void
 }
 
-export default function Inspector({ selected }: Props) {
+export default function Inspector({
+  selected,
+  activeCameraId,
+  onSetActiveCamera,
+  onDelete,
+  transformMode,
+  onTransformModeChange,
+  onPoseCommit,
+}: Props) {
   const [pointSize, setPointSize] = useState<number | null>(null)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const lastSent = useRef<number | null>(null)
+  const lastPoseSent = useRef<string | null>(null)
+  const lastCameraSent = useRef<string | null>(null)
+  const lastSelectedId = useRef<string | null>(null)
+  const suppressPoseCommitRef = useRef(false)
+  const manualPoseEditRef = useRef(false)
+  const round3 = (v: number) => Math.round(v * 1000) / 1000
 
   const isPointCloud = selected?.type === 'pointcloud'
   const isGaussians = selected?.type === 'gaussians'
+  const isCamera = selected?.type === 'camera'
 
   // LOD override state
   const [lodOverride, setLodOverride] = useState<string | undefined>(undefined)
@@ -25,6 +55,19 @@ export default function Inspector({ selected }: Props) {
   const [solidColor, setSolidColor] = useState<string>('#ff8a33') // hex string for input[type=color]
   const [colorMap, setColorMap] = useState<ColormapId>(DEFAULT_HEIGHT_COLORMAP)
   const [isVisible, setIsVisible] = useState(true)
+  const [position, setPosition] = useState<[number, number, number] | null>(null)
+  const [rotation, setRotation] = useState<[number, number, number, number] | null>(null)
+  const [rotationEuler, setRotationEuler] = useState<[number, number, number] | null>(null)
+  const dragRef = useRef<{
+    startX: number
+    startY: number
+    startVal: number
+    index: number
+    active: boolean
+  } | null>(null)
+  const [fov, setFov] = useState<number | null>(null)
+  const [near, setNear] = useState<number | null>(null)
+  const [far, setFar] = useState<number | null>(null)
 
   useEffect(() => {
     setErr(null)
@@ -34,14 +77,44 @@ export default function Inspector({ selected }: Props) {
       return
     }
 
-    const fetchMeta = isPointCloud ? fetchPointCloudElementMeta : isGaussians ? fetchGaussianElementMeta : null
+    const fetchMeta = isPointCloud
+      ? fetchPointCloudElementMeta
+      : isGaussians
+        ? fetchGaussianElementMeta
+        : isCamera
+          ? fetchCameraElementMeta
+          : null
     if (!fetchMeta) {
       setPointSize(null)
       return
     }
 
     fetchMeta(selected.id)
-      .then((m: any) => setPointSize(m.pointSize))
+      .then((m: any) => {
+        suppressPoseCommitRef.current = true
+        setPointSize(m.pointSize ?? null)
+        setPosition(m.position ?? [0, 0, 0])
+        const quat: [number, number, number, number] = (m.rotation ?? [0, 0, 0, 1]) as any
+        setRotation(quat)
+        try {
+          const q = new THREE.Quaternion(quat[0], quat[1], quat[2], quat[3]).normalize()
+          const euler = new THREE.Euler().setFromQuaternion(q, 'XYZ')
+          setRotationEuler([
+            THREE.MathUtils.radToDeg(euler.x),
+            THREE.MathUtils.radToDeg(euler.y),
+            THREE.MathUtils.radToDeg(euler.z),
+          ])
+        } catch {
+          setRotationEuler([0, 0, 0])
+        }
+        setIsVisible(m.visible !== false)
+        setFov(m.fov ?? null)
+        setNear(m.near ?? null)
+        setFar(m.far ?? null)
+        window.setTimeout(() => {
+          suppressPoseCommitRef.current = false
+        }, 0)
+      })
       .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)))
 
     // initialize client-side values from window globals if present
@@ -71,10 +144,30 @@ export default function Inspector({ selected }: Props) {
         setColorMode('logged')
         setColorMap(DEFAULT_HEIGHT_COLORMAP)
       }
-      const visibilityMap = anyWin.__begira_visibility || {}
-      setIsVisible(visibilityMap[selected.id] !== false)
     } catch {}
-  }, [selected?.id, isPointCloud, isGaussians])
+  }, [selected?.id, isPointCloud, isGaussians, isCamera])
+
+  useEffect(() => {
+    try {
+      const anyWin = window as any
+      const map = anyWin.__begira_local_pose || {}
+      if (lastSelectedId.current && lastSelectedId.current !== selected?.id) {
+        delete map[lastSelectedId.current]
+      }
+      lastSelectedId.current = selected?.id ?? null
+      anyWin.__begira_local_pose = map
+    } catch {}
+  }, [selected?.id])
+
+  useEffect(() => {
+    const handler = () => {
+      manualPoseEditRef.current = false
+      lastPoseSent.current = null
+      lastCameraSent.current = null
+    }
+    window.addEventListener('begira_reset', handler)
+    return () => window.removeEventListener('begira_reset', handler)
+  }, [])
 
   useEffect(() => {
     if (!selected || pointSize === null) return
@@ -149,15 +242,153 @@ export default function Inspector({ selected }: Props) {
 
   const setVisibilityForElement = (id: string, visible: boolean) => {
     try {
-      const anyWin = window as any
-      anyWin.__begira_visibility = anyWin.__begira_visibility || {}
-      anyWin.__begira_visibility[id] = visible
       setIsVisible(visible)
-      try {
-        const ev = new CustomEvent('begira_visibility_changed', { detail: { id } })
-        window.dispatchEvent(ev)
-      } catch {}
+      void updateElementMeta(id, { visible })
     } catch {}
+  }
+
+  useEffect(() => {
+    if (!selected || !position || !rotation) return
+    if (suppressPoseCommitRef.current) return
+    if (!manualPoseEditRef.current) return
+    const key = `${position.join(',')}|${rotation.join(',')}`
+    if (lastPoseSent.current === key) return
+    const handle = window.setTimeout(() => {
+      const q = new THREE.Quaternion(rotation[0], rotation[1], rotation[2], rotation[3]).normalize()
+      onPoseCommit(selected.id, position, [q.x, q.y, q.z, q.w])
+      lastPoseSent.current = key
+      manualPoseEditRef.current = false
+    }, 50)
+    return () => window.clearTimeout(handle)
+  }, [position, rotation, selected?.id, onPoseCommit])
+
+  useEffect(() => {
+    let cancelled = false
+    if (!selected) return
+
+    const tick = async () => {
+      try {
+        if (cancelled || !selected) return
+        const anyWin = window as any
+        const localPose = anyWin.__begira_local_pose?.[selected.id]
+        if (localPose && localPose.position && localPose.rotation) {
+          const pos = localPose.position as [number, number, number]
+          const rot = localPose.rotation as [number, number, number, number]
+          setPosition((prev) => (JSON.stringify(prev) === JSON.stringify(pos) ? prev : pos))
+          setRotation((prev) => (JSON.stringify(prev) === JSON.stringify(rot) ? prev : rot))
+          try {
+            const q = new THREE.Quaternion(rot[0], rot[1], rot[2], rot[3]).normalize()
+            const euler = new THREE.Euler().setFromQuaternion(q, 'XYZ')
+            const nextEuler: [number, number, number] = [
+              THREE.MathUtils.radToDeg(euler.x),
+              THREE.MathUtils.radToDeg(euler.y),
+              THREE.MathUtils.radToDeg(euler.z),
+            ]
+            setRotationEuler((prev) => (JSON.stringify(prev) === JSON.stringify(nextEuler) ? prev : nextEuler))
+          } catch {}
+          return
+        }
+        const meta = await fetchElementMeta(selected.id)
+        if (cancelled) return
+        suppressPoseCommitRef.current = true
+        if (meta.position) {
+          const pos = meta.position as [number, number, number]
+          setPosition((prev) => (JSON.stringify(prev) === JSON.stringify(pos) ? prev : pos))
+        }
+        if (meta.rotation) {
+          const rot = meta.rotation as [number, number, number, number]
+          setRotation((prev) => (JSON.stringify(prev) === JSON.stringify(rot) ? prev : rot))
+          try {
+            const q = new THREE.Quaternion(rot[0], rot[1], rot[2], rot[3]).normalize()
+            const euler = new THREE.Euler().setFromQuaternion(q, 'XYZ')
+            const nextEuler: [number, number, number] = [
+              THREE.MathUtils.radToDeg(euler.x),
+              THREE.MathUtils.radToDeg(euler.y),
+              THREE.MathUtils.radToDeg(euler.z),
+            ]
+            setRotationEuler((prev) => (JSON.stringify(prev) === JSON.stringify(nextEuler) ? prev : nextEuler))
+          } catch {}
+        }
+        if (meta.visible !== undefined) setIsVisible(meta.visible !== false)
+        if (meta.pointSize !== undefined) setPointSize(meta.pointSize)
+        if (meta.fov !== undefined) setFov(meta.fov)
+        if (meta.near !== undefined) setNear(meta.near)
+        if (meta.far !== undefined) setFar(meta.far)
+        window.setTimeout(() => {
+          suppressPoseCommitRef.current = false
+        }, 0)
+      } catch {}
+    }
+
+    const id = window.setInterval(() => void tick(), 500)
+    void tick()
+    return () => {
+      cancelled = true
+      window.clearInterval(id)
+    }
+  }, [selected?.id])
+
+  useEffect(() => {
+    if (!selected || !position || !rotation) return
+    try {
+      const anyWin = window as any
+      if (!anyWin.__begira_local_pose) anyWin.__begira_local_pose = {}
+      anyWin.__begira_local_pose[selected.id] = {
+        position: [...position],
+        rotation: [...rotation],
+      }
+    } catch {}
+  }, [position, rotation, selected?.id])
+
+  useEffect(() => {
+    if (!selected || !isCamera) return
+    if (fov === null || near === null || far === null) return
+    const key = `${fov}|${near}|${far}`
+    if (lastCameraSent.current === key) return
+    const handle = window.setTimeout(() => {
+      void updateElementMeta(selected.id, { fov, near, far })
+      lastCameraSent.current = key
+    }, 50)
+    return () => window.clearTimeout(handle)
+  }, [fov, near, far, selected?.id, isCamera])
+
+  const startDragNumber =
+    (
+      index: number,
+      current: number,
+      apply: (index: number, value: number) => void,
+      stepBase = 0.01,
+    ) =>
+    (e: React.MouseEvent<HTMLInputElement>) => {
+    if (e.button !== 0) return
+    dragRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      startVal: current,
+      index,
+      active: false,
+    }
+    const onMove = (ev: MouseEvent) => {
+      if (!dragRef.current) return
+      const dy = ev.clientY - dragRef.current.startY
+      if (!dragRef.current.active && Math.abs(dy) < 2) return
+      dragRef.current.active = true
+      const step = ev.shiftKey ? stepBase * 0.1 : stepBase
+      const nextVal = round3(dragRef.current.startVal - dy * step)
+      manualPoseEditRef.current = true
+      apply(dragRef.current.index, nextVal)
+    }
+    const onUp = () => {
+      dragRef.current = null
+      document.body.style.userSelect = ''
+      document.body.style.cursor = ''
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    document.body.style.userSelect = 'none'
+    document.body.style.cursor = 'ns-resize'
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
   }
 
   if (!selected) {
@@ -177,6 +408,178 @@ export default function Inspector({ selected }: Props) {
 
       <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8 }}>type</div>
       <div>{selected.type}</div>
+
+      <div style={{ marginTop: 14, display: 'flex', gap: 8, alignItems: 'center' }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, opacity: 0.9 }}>
+          <input
+            type="checkbox"
+            checked={isVisible}
+            onChange={(e) => setVisibilityForElement(selected.id, e.target.checked)}
+          />
+          Visible
+        </label>
+        <button
+          onClick={() => onDelete(selected.id)}
+          style={{
+            padding: '6px 8px',
+            borderRadius: 6,
+            border: '1px solid #1b2235',
+            background: '#0f1630',
+            color: '#e8ecff',
+            cursor: 'pointer',
+            fontSize: 12,
+          }}
+        >
+          Remove
+        </button>
+      </div>
+
+      {isCamera && (
+        <div style={{ marginTop: 10 }}>
+          <button
+            onClick={() => onSetActiveCamera(activeCameraId === selected.id ? null : selected.id)}
+            style={{
+              padding: '6px 8px',
+              borderRadius: 6,
+              border: '1px solid #1b2235',
+              background: activeCameraId === selected.id ? '#172242' : '#0f1630',
+              color: '#e8ecff',
+              cursor: 'pointer',
+              fontSize: 12,
+            }}
+          >
+            {activeCameraId === selected.id ? 'Exit Camera View' : 'View From Camera'}
+          </button>
+        </div>
+      )}
+
+      <div style={{ marginTop: 14 }}>
+        <div style={{ fontSize: 12, opacity: 0.8 }}>Transform</div>
+        <div style={{ marginTop: 6, fontSize: 12, opacity: 0.7 }}>Position</div>
+        <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+          {[0, 1, 2].map((i) => (
+            <input
+              key={`pos-${i}`}
+              type="number"
+              step={0.001}
+              value={position ? round3(position[i]) : 0}
+              onMouseDown={startDragNumber(
+                i,
+                position ? round3(position[i]) : 0,
+                (idx, val) =>
+                  setPosition((prev) => {
+                    const next: [number, number, number] = prev ? [...prev] as any : [0, 0, 0]
+                    next[idx] = round3(val)
+                    return next
+                  }),
+                0.01,
+              )}
+              onChange={(e) => {
+                const v = round3(parseFloat(e.target.value))
+                manualPoseEditRef.current = true
+                setPosition((prev) => {
+                  const next: [number, number, number] = prev ? [...prev] as any : [0, 0, 0]
+                  next[i] = Number.isFinite(v) ? round3(v) : 0
+                  return next
+                })
+              }}
+              style={{ width: 80 }}
+            />
+          ))}
+        </div>
+        <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>Rotation (deg)</div>
+        <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+          {[0, 1, 2].map((i) => (
+            <input
+              key={`rot-${i}`}
+              type="number"
+              step={0.001}
+              value={rotationEuler ? round3(rotationEuler[i]) : 0}
+              onMouseDown={startDragNumber(
+                i,
+                rotationEuler ? round3(rotationEuler[i]) : 0,
+                (idx, val) => {
+                  manualPoseEditRef.current = true
+                  setRotationEuler((prev) => {
+                    const next: [number, number, number] = prev ? [...prev] as any : [0, 0, 0]
+                    next[idx] = round3(val)
+                    return next
+                  })
+                  const nextEuler: [number, number, number] = rotationEuler ? [...rotationEuler] as any : [0, 0, 0]
+                  nextEuler[idx] = round3(val)
+                  const euler = new THREE.Euler(
+                    THREE.MathUtils.degToRad(nextEuler[0]),
+                    THREE.MathUtils.degToRad(nextEuler[1]),
+                    THREE.MathUtils.degToRad(nextEuler[2]),
+                    'XYZ',
+                  )
+                  const q = new THREE.Quaternion().setFromEuler(euler).normalize()
+                  setRotation([q.x, q.y, q.z, q.w])
+                },
+                0.1,
+              )}
+              onChange={(e) => {
+                const v = round3(parseFloat(e.target.value))
+                manualPoseEditRef.current = true
+                setRotationEuler((prev) => {
+                  const next: [number, number, number] = prev ? [...prev] as any : [0, 0, 0]
+                  next[i] = Number.isFinite(v) ? round3(v) : 0
+                  return next
+                })
+                const nextEuler: [number, number, number] = rotationEuler ? [...rotationEuler] as any : [0, 0, 0]
+                nextEuler[i] = Number.isFinite(v) ? round3(v) : 0
+                const euler = new THREE.Euler(
+                  THREE.MathUtils.degToRad(nextEuler[0]),
+                  THREE.MathUtils.degToRad(nextEuler[1]),
+                  THREE.MathUtils.degToRad(nextEuler[2]),
+                  'XYZ',
+                )
+                const q = new THREE.Quaternion().setFromEuler(euler).normalize()
+                setRotation([q.x, q.y, q.z, q.w])
+              }}
+              style={{ width: 80 }}
+            />
+          ))}
+        </div>
+      </div>
+
+      {isCamera && (
+        <div style={{ marginTop: 14 }}>
+          <div style={{ fontSize: 12, opacity: 0.8 }}>Camera</div>
+          <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+            <label style={{ fontSize: 12, opacity: 0.7 }}>
+              FOV
+              <input
+                type="number"
+                step={1}
+                value={fov ?? 60}
+                onChange={(e) => setFov(parseFloat(e.target.value))}
+                style={{ width: 80, marginLeft: 6 }}
+              />
+            </label>
+            <label style={{ fontSize: 12, opacity: 0.7 }}>
+              Near
+              <input
+                type="number"
+                step={0.01}
+                value={near ?? 0.01}
+                onChange={(e) => setNear(parseFloat(e.target.value))}
+                style={{ width: 80, marginLeft: 6 }}
+              />
+            </label>
+            <label style={{ fontSize: 12, opacity: 0.7 }}>
+              Far
+              <input
+                type="number"
+                step={1}
+                value={far ?? 1000}
+                onChange={(e) => setFar(parseFloat(e.target.value))}
+                style={{ width: 80, marginLeft: 6 }}
+              />
+            </label>
+          </div>
+        </div>
+      )}
 
       <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8 }}>name</div>
       <div>{selected.name}</div>
@@ -221,19 +624,6 @@ export default function Inspector({ selected }: Props) {
             />
           </div>
           <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>{busy ? 'Updating…' : ' '}</div>
-        </div>
-      )}
-
-      {(isPointCloud || isGaussians) && (
-        <div style={{ marginTop: 14 }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, opacity: 0.9 }}>
-            <input
-              type="checkbox"
-              checked={isVisible}
-              onChange={(e) => setVisibilityForElement(selected.id, e.target.checked)}
-            />
-            Visible
-          </label>
         </div>
       )}
 

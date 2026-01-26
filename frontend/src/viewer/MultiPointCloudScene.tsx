@@ -23,12 +23,14 @@ function Cloud({
   onSelect,
   onFocus,
   renderMode,
+  onRegisterObject,
 }: {
   cloudId: string
   selected: boolean
   onSelect: (id: string | null) => void
   onFocus: (id: string) => void
   renderMode: PointCloudRenderMode
+  onRegisterObject?: (id: string, obj: THREE.Object3D | null) => void
 }) {
   const state = usePointCloud(cloudId)
   const circleMap = useMemo(() => getCircleSpriteTexture(), [])
@@ -48,8 +50,8 @@ function Cloud({
   const defaultMap = colorMode === 'depth' ? DEFAULT_DEPTH_COLORMAP : DEFAULT_HEIGHT_COLORMAP
   const colorMap: ColormapId = (vis && vis.colorMap) || defaultMap
   const lut = useMemo(() => buildColormapLUT(colorMap, 256), [colorMap])
-  const visibilityMap = (window as any).__begira_visibility || {}
-  const isVisible = visibilityMap[cloudId] !== false
+  const meta = state.status === 'ready' ? state.meta : null
+  const isVisible = meta && meta.visible !== undefined ? !!meta.visible : true
 
   // listen for inspector override changes so we re-render
   const [, setTick] = useState(0)
@@ -61,18 +63,32 @@ function Cloud({
     }
     try {
       window.addEventListener('begira_visual_override_changed', handler)
-      window.addEventListener('begira_visibility_changed', handler)
     } catch {}
     return () => {
       try {
         window.removeEventListener('begira_visual_override_changed', handler)
-        window.removeEventListener('begira_visibility_changed', handler)
       } catch {}
     }
   }, [cloudId])
 
   const { camera } = useThree()
   const pointsRef = useRef<THREE.Points | null>(null)
+  const groupRef = useRef<THREE.Group | null>(null)
+
+  useEffect(() => {
+    if (!onRegisterObject) return
+    onRegisterObject(cloudId, groupRef.current)
+    return () => onRegisterObject(cloudId, null)
+  }, [cloudId, onRegisterObject])
+
+  useEffect(() => {
+    if (!meta || !groupRef.current) return
+    if ((window as any).__begira_local_pose?.[cloudId]) return
+    const pos = meta.position ?? [0, 0, 0]
+    const rot = meta.rotation ?? [0, 0, 0, 1]
+    groupRef.current.position.set(pos[0], pos[1], pos[2])
+    groupRef.current.quaternion.set(rot[0], rot[1], rot[2], rot[3]).normalize()
+  }, [meta])
 
   // helper: compute height colors once and attach as geometry attribute
   const computeHeightColors = () => {
@@ -156,7 +172,19 @@ function Cloud({
 
   // Also recompute periodically during frames while in height mode so gradient follows camera movement
   const frameCounter = useRef(0)
+  const lastLocalPoseRef = useRef<string | null>(null)
   useFrame(() => {
+    try {
+      const local = (window as any).__begira_local_pose?.[cloudId]
+      if (local && local.position && local.rotation && groupRef.current) {
+        const key = `${local.position.join(',')}|${local.rotation.join(',')}`
+        if (lastLocalPoseRef.current !== key) {
+          lastLocalPoseRef.current = key
+          groupRef.current.position.set(local.position[0], local.position[1], local.position[2])
+          groupRef.current.quaternion.set(local.rotation[0], local.rotation[1], local.rotation[2], local.rotation[3]).normalize()
+        }
+      }
+    } catch {}
     if (colorMode === 'height') {
       frameCounter.current = (frameCounter.current + 1) % 8
       if (frameCounter.current === 0) computeHeightColors()
@@ -313,10 +341,10 @@ function Cloud({
   const circles = renderMode === 'circles'
 
   return (
-    <points
-      ref={pointsRef}
-      visible={isVisible}
-      geometry={state.decoded.geometry}
+    <group ref={groupRef} visible={isVisible}>
+      <points
+        ref={pointsRef}
+        geometry={state.decoded.geometry}
       // IMPORTANT: raycasting against large THREE.Points can become extremely expensive,
       // especially while moving the camera (pointer events trigger raycasts internally).
       // We disable it to keep interaction smooth for large point clouds.
@@ -345,8 +373,8 @@ function Cloud({
         onSelect(cloudId)
         if (dbl) onFocus(cloudId)
       }}
-    >
-      <pointsMaterial
+      >
+        <pointsMaterial
         ref={materialRef}
         // 'fast'  : opaque square points (fastest)
         // 'circles': opaque circle sprites via alphaTest (still fast, no blending)
@@ -369,8 +397,9 @@ function Cloud({
         key={colorMode}
         // onBeforeCompile to inject depth-based coloring when requested
         onBeforeCompile={onBeforeCompile}
-      />
-    </points>
+        />
+      </points>
+    </group>
   )
 }
 
@@ -380,12 +409,14 @@ export default function MultiPointCloudScene({
   onSelect,
   onFocus,
   renderMode = 'fast',
+  onRegisterObject,
 }: {
   cloudIds: string[]
   selectedId: string | null
   onSelect: (id: string | null) => void
   onFocus: (id: string) => void
   renderMode?: PointCloudRenderMode
+  onRegisterObject?: (id: string, obj: THREE.Object3D | null) => void
 }) {
   return (
     <>
@@ -397,6 +428,7 @@ export default function MultiPointCloudScene({
           onSelect={onSelect}
           onFocus={onFocus}
           renderMode={renderMode}
+          onRegisterObject={onRegisterObject}
         />
       ))}
     </>

@@ -7,7 +7,7 @@ import numpy as np
 from fastapi import FastAPI, HTTPException, Request
 from starlette.responses import Response
 
-from .elements import PointCloudElement, GaussianSplatElement
+from .elements import PointCloudElement, GaussianSplatElement, CameraElement
 from .registry import REGISTRY
 
 
@@ -28,7 +28,6 @@ def mount_elements_api(app: FastAPI) -> None:
     @app.get("/api/elements")
     def list_elements() -> list[dict[str, Any]]:
         els = REGISTRY.list_elements()
-        els.sort(key=lambda e: (e.name, e.id))
         out: list[dict[str, Any]] = []
         for e in els:
             if isinstance(e, PointCloudElement):
@@ -41,6 +40,7 @@ def mount_elements_api(app: FastAPI) -> None:
                         "createdAt": float(e.created_at),
                         "bounds": _bounds_from_positions(e.positions),
                         "summary": {"pointCount": int(e.positions.shape[0])},
+                        "visible": bool(e.visible),
                     }
                 )
             elif isinstance(e, GaussianSplatElement):
@@ -53,6 +53,18 @@ def mount_elements_api(app: FastAPI) -> None:
                         "createdAt": float(e.created_at),
                         "bounds": _bounds_from_positions(e.positions),
                         "summary": {"count": int(e.positions.shape[0])},
+                        "visible": bool(e.visible),
+                    }
+                )
+            elif isinstance(e, CameraElement):
+                out.append(
+                    {
+                        "id": e.id,
+                        "type": e.type,
+                        "name": e.name,
+                        "revision": int(e.revision),
+                        "createdAt": float(e.created_at),
+                        "visible": bool(e.visible),
                     }
                 )
             else:
@@ -89,6 +101,9 @@ def mount_elements_api(app: FastAPI) -> None:
                 "pointCount": int(e.positions.shape[0]),
                 "interleaved": e.colors is not None,
                 "bytesPerPoint": int(12 + (3 if e.colors is not None else 0)),
+                "position": list(e.position),
+                "rotation": list(e.rotation),
+                "visible": bool(e.visible),
                 "schema": schema,
                 "payloads": {
                     "points": {
@@ -115,6 +130,9 @@ def mount_elements_api(app: FastAPI) -> None:
                 "endianness": "little",
                 "pointSize": float(e.point_size),
                 "count": int(e.positions.shape[0]),
+                "position": list(e.position),
+                "rotation": list(e.rotation),
+                "visible": bool(e.visible),
                 "bytesPerGaussian": 14 * 4,
                 "schema": schema,
                 "payloads": {
@@ -123,6 +141,20 @@ def mount_elements_api(app: FastAPI) -> None:
                         "contentType": "application/octet-stream",
                     }
                 },
+            }
+
+        if isinstance(e, CameraElement):
+            return {
+                "id": e.id,
+                "type": e.type,
+                "name": e.name,
+                "revision": int(e.revision),
+                "fov": float(e.fov),
+                "near": float(e.near),
+                "far": float(e.far),
+                "position": list(e.position),
+                "rotation": list(e.rotation),
+                "visible": bool(e.visible),
             }
 
         raise HTTPException(status_code=400, detail=f"Unsupported element type: {e.type}")
@@ -368,34 +400,94 @@ def mount_elements_api(app: FastAPI) -> None:
 
         return {"ok": True, "id": gs.id, "type": gs.type, "revision": int(gs.revision), "count": gs.count}
 
+    @app.post("/api/elements/cameras")
+    def create_camera(body: dict) -> dict[str, Any]:
+        try:
+            name = str(body.get("name") or "Camera")
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid name")
+
+        def _as_vec(key: str, length: int, default: list[float]) -> tuple[float, ...]:
+            raw = body.get(key, default)
+            if raw is None:
+                return tuple(default)
+            if not isinstance(raw, (list, tuple)) or len(raw) != length:
+                raise HTTPException(status_code=400, detail=f"Invalid {key}")
+            return tuple(float(x) for x in raw)
+
+        position = _as_vec("position", 3, [0.0, 0.0, 0.0])
+        rotation = _as_vec("rotation", 4, [0.0, 0.0, 0.0, 1.0])
+
+        fov = float(body.get("fov", 60.0))
+        near = float(body.get("near", 0.01))
+        far = float(body.get("far", 1000.0))
+
+        element_id = body.get("elementId")
+        if element_id is not None:
+            element_id = str(element_id).strip() or None
+
+        cam = REGISTRY.upsert_camera(
+            name=name,
+            position=position,
+            rotation=rotation,
+            fov=fov,
+            near=near,
+            far=far,
+            element_id=element_id,
+        )
+        return {"ok": True, "id": cam.id, "type": cam.type, "revision": int(cam.revision)}
+
     @app.patch("/api/elements/{element_id}/meta")
     def patch_element_meta(element_id: str, body: dict) -> dict[str, Any]:
         e = REGISTRY.get_element(element_id)
         if e is None:
             raise HTTPException(status_code=404, detail="Unknown element")
 
-        if isinstance(e, PointCloudElement):
-            try:
-                point_size = body.get("pointSize")
-                if point_size is not None:
-                    point_size = float(point_size)
-                pc = REGISTRY.update_pointcloud_settings(element_id, point_size=point_size)
-                return {"ok": True, "id": pc.id, "type": pc.type, "revision": int(pc.revision), "pointSize": float(pc.point_size)}
-            except (TypeError, ValueError) as ex:
-                raise HTTPException(status_code=400, detail=str(ex))
-            except KeyError:
-                raise HTTPException(status_code=404, detail="Unknown pointcloud")
+        def _as_vec(key: str, length: int) -> tuple[float, ...] | None:
+            if key not in body:
+                return None
+            raw = body.get(key)
+            if raw is None:
+                return None
+            if not isinstance(raw, (list, tuple)) or len(raw) != length:
+                raise HTTPException(status_code=400, detail=f"Invalid {key}")
+            return tuple(float(x) for x in raw)
 
-        if isinstance(e, GaussianSplatElement):
-            try:
-                point_size = body.get("pointSize")
-                if point_size is not None:
-                    point_size = float(point_size)
-                gs = REGISTRY.update_gaussians_settings(element_id, point_size=point_size)
-                return {"ok": True, "id": gs.id, "type": gs.type, "revision": int(gs.revision), "pointSize": float(gs.point_size)}
-            except (TypeError, ValueError) as ex:
-                raise HTTPException(status_code=400, detail=str(ex))
-            except KeyError:
-                raise HTTPException(status_code=404, detail="Unknown gaussians")
+        try:
+            position = _as_vec("position", 3)
+            rotation = _as_vec("rotation", 4)
+            visible = body.get("visible") if "visible" in body else None
+            deleted = body.get("deleted") if "deleted" in body else None
 
-        raise HTTPException(status_code=400, detail=f"Unsupported element type: {getattr(e, 'type', None)}")
+            point_size = body.get("pointSize") if "pointSize" in body else None
+            if point_size is not None:
+                point_size = float(point_size)
+
+            fov = body.get("fov") if "fov" in body else None
+            near = body.get("near") if "near" in body else None
+            far = body.get("far") if "far" in body else None
+
+            updated = REGISTRY.update_element_meta(
+                element_id,
+                position=position,
+                rotation=rotation,
+                visible=bool(visible) if visible is not None else None,
+                deleted=bool(deleted) if deleted is not None else None,
+                point_size=point_size,
+                fov=float(fov) if fov is not None else None,
+                near=float(near) if near is not None else None,
+                far=float(far) if far is not None else None,
+            )
+            return {"ok": True, "id": updated.id, "type": updated.type, "revision": int(updated.revision)}
+        except (TypeError, ValueError) as ex:
+            raise HTTPException(status_code=400, detail=str(ex))
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Unknown element")
+
+    @app.delete("/api/elements/{element_id}")
+    def delete_element(element_id: str) -> dict[str, Any]:
+        try:
+            e = REGISTRY.delete_element(element_id)
+            return {"ok": True, "id": e.id, "type": e.type, "revision": int(e.revision)}
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Unknown element")

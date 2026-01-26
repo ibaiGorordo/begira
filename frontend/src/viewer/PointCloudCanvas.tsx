@@ -1,10 +1,12 @@
-import { Canvas, useThree } from '@react-three/fiber'
-import { OrbitControls } from '@react-three/drei'
+import { Canvas, useFrame, useThree } from '@react-three/fiber'
+import { OrbitControls, TransformControls } from '@react-three/drei'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from 'react'
 import * as THREE from 'three'
 import WASDControls from './WASDControls'
 import MultiPointCloudScene, { PointCloudRenderMode } from './MultiPointCloudScene'
 import GaussianSplatScene from './GaussianSplatScene'
+import CameraScene from './CameraScene'
+import { useCamera } from './useCamera'
 import {
   createClickGesture,
   isClickGesture,
@@ -137,6 +139,50 @@ function FrameCamera({
   return null
 }
 
+function ActiveCameraDriver({
+  meta,
+  enabled,
+}: {
+  meta: { position?: [number, number, number]; rotation?: [number, number, number, number]; fov: number; near: number; far: number } | null
+  enabled: boolean
+}) {
+  const { camera } = useThree()
+
+  useEffect(() => {
+    if (!enabled || !meta) return
+    const pos = meta.position ?? [0, 0, 0]
+    const rot = meta.rotation ?? [0, 0, 0, 1]
+    camera.position.set(pos[0], pos[1], pos[2])
+    camera.quaternion.set(rot[0], rot[1], rot[2], rot[3])
+    const cam = camera as THREE.PerspectiveCamera
+    cam.fov = meta.fov
+    cam.near = meta.near
+    cam.far = meta.far
+    cam.updateProjectionMatrix()
+  }, [camera, enabled, meta])
+
+  return null
+}
+
+function ViewCameraReporter() {
+  const { camera } = useThree()
+  const lastSent = useRef(0)
+  useFrame(() => {
+    const now = performance.now()
+    if (now - lastSent.current < 200) return
+    lastSent.current = now
+    const cam = camera as THREE.PerspectiveCamera
+    ;(window as any).__begira_view_camera = {
+      position: [cam.position.x, cam.position.y, cam.position.z],
+      rotation: [cam.quaternion.x, cam.quaternion.y, cam.quaternion.z, cam.quaternion.w],
+      fov: cam.fov,
+      near: cam.near,
+      far: cam.far,
+    }
+  })
+  return null
+}
+
 function useSceneBounds(): {
   bounds: { min: THREE.Vector3; max: THREE.Vector3 } | null
   setBoundsFromMeta: (metaBounds: { min: [number, number, number]; max: [number, number, number] }[]) => void
@@ -168,21 +214,29 @@ function useSceneBounds(): {
 export default function PointCloudCanvas({
   cloudIds,
   gaussianIds = [],
+  cameraIds = [],
   selectedId,
   onSelect,
   focusTarget,
   onFocus,
   cloudMetaBounds,
   gaussianMetaBounds = [],
+  activeCameraId,
+  transformMode = 'translate',
+  onTransformCommit,
 }: {
   cloudIds: string[]
   gaussianIds?: string[]
+  cameraIds?: string[]
   selectedId: string | null
   onSelect: (id: string | null) => void
   focusTarget: string | null
   onFocus: (id: string | null) => void
   cloudMetaBounds: { min: [number, number, number]; max: [number, number, number] }[]
   gaussianMetaBounds?: { min: [number, number, number]; max: [number, number, number] }[]
+  activeCameraId?: string | null
+  transformMode?: 'translate' | 'rotate'
+  onTransformCommit?: (id: string, position: [number, number, number], rotation: [number, number, number, number]) => void
 }) {
   const background = useMemo(() => new THREE.Color('#0b1020'), [])
 
@@ -246,6 +300,12 @@ export default function PointCloudCanvas({
     focusIdRef.current = focusId
   }, [focusId])
 
+  useEffect(() => {
+    if (selectedId === null) {
+      setFocusId(null)
+    }
+  }, [selectedId])
+
   const [focusToken, setFocusToken] = useState(0)
   const bumpFocus = useCallback((source?: string) => {
     setFocusToken((t) => {
@@ -270,7 +330,7 @@ export default function PointCloudCanvas({
 
   // Initialize focus when elements first appear.
   const prevElementCount = useRef(0)
-  const allElementIds = useMemo(() => [...cloudIds, ...gaussianIds], [cloudIds, gaussianIds])
+  const allElementIds = useMemo(() => [...cloudIds, ...gaussianIds, ...cameraIds], [cloudIds, gaussianIds, cameraIds])
   useEffect(() => {
     const prev = prevElementCount.current
     prevElementCount.current = allElementIds.length
@@ -287,10 +347,10 @@ export default function PointCloudCanvas({
       return
     }
 
-    // If the currently focused id disappears, fall back to first element.
+    // If the currently focused id disappears, clear focus to avoid camera jumps.
     setFocusId((cur) => {
-      if (!cur) return allElementIds[0]
-      return allElementIds.includes(cur) ? cur : allElementIds[0]
+      if (!cur) return null
+      return allElementIds.includes(cur) ? cur : null
     })
   }, [allElementIds, bumpFocus])
 
@@ -329,8 +389,8 @@ export default function PointCloudCanvas({
   const focusBounds = useMemo(() => {
     let b: Bounds3 | null = null
 
-    if (!focusId) b = scene.bounds
-    else if (focusId === firstCloudId && firstDecodedBounds) b = firstDecodedBounds
+    if (!focusId) return null
+    if (focusId === firstCloudId && firstDecodedBounds) b = firstDecodedBounds
     else {
       // Search in clouds
       const cIdx = cloudIds.findIndex((x) => x === focusId)
@@ -353,6 +413,26 @@ export default function PointCloudCanvas({
   }, [cloudIds, gaussianIds, cloudMetaBounds, gaussianMetaBounds, convention.worldToView, firstCloudId, firstDecodedBounds, focusId, scene.bounds])
 
   const canvasGesture = useRef(createClickGesture())
+  const objectMapRef = useRef<Map<string, THREE.Object3D>>(new Map())
+  const [objectsVersion, setObjectsVersion] = useState(0)
+  const lastTransformRef = useRef<string | null>(null)
+  const registerObject = useCallback((id: string, obj: THREE.Object3D | null) => {
+    if (obj) objectMapRef.current.set(id, obj)
+    else objectMapRef.current.delete(id)
+    setObjectsVersion((v) => v + 1)
+  }, [])
+  const selectedObject = useMemo(() => {
+    if (!selectedId) return null
+    return objectMapRef.current.get(selectedId) ?? null
+  }, [selectedId, objectsVersion])
+
+  const activeCameraState = useCamera(activeCameraId ?? '')
+
+  useEffect(() => {
+    if (orbitRef.current) {
+      orbitRef.current.enabled = !activeCameraId
+    }
+  }, [activeCameraId])
 
   return (
     <Canvas
@@ -384,12 +464,17 @@ export default function PointCloudCanvas({
       }}
     >
       <DebugOverlay enabled={debugOverlayEnabled} />
+      <ViewCameraReporter />
 
       <ambientLight intensity={0.6} />
       <directionalLight position={[5, 8, 5]} intensity={0.8} />
 
-      {controlsReady && (
+      {controlsReady && focusId && (
         <FrameCamera bounds={focusBounds} focusToken={focusToken} forward={viewForward} topDown={topDownOnFocus} />
+      )}
+
+      {activeCameraId && activeCameraState.status === 'ready' && (
+        <ActiveCameraDriver meta={activeCameraState.meta} enabled />
       )}
 
       <WASDControls enabled speed={2.0} />
@@ -411,6 +496,7 @@ export default function PointCloudCanvas({
             bumpFocus('cloud:doubleclick-focus')
             onFocus(id)
           }}
+          onRegisterObject={registerObject}
         />
         <GaussianSplatScene
           elementIds={gaussianIds}
@@ -421,6 +507,18 @@ export default function PointCloudCanvas({
             bumpFocus('gaussians:doubleclick-focus')
             onFocus(id)
           }}
+          onRegisterObject={registerObject}
+        />
+        <CameraScene
+          cameraIds={cameraIds}
+          selectedId={selectedId}
+          onSelect={(id) => onSelect(id)}
+          onFocus={(id) => {
+            setFocusId(id)
+            bumpFocus('camera:doubleclick-focus')
+            onFocus(id)
+          }}
+          onRegisterObject={registerObject}
         />
       </group>
 
@@ -452,6 +550,34 @@ export default function PointCloudCanvas({
           setControlsReady(true)
         }}
       />
+
+      {selectedObject && onTransformCommit && (
+        <TransformControls
+          object={selectedObject}
+          mode={transformMode}
+          onMouseDown={() => {
+            if (orbitRef.current) orbitRef.current.enabled = false
+          }}
+          onMouseUp={() => {
+            if (orbitRef.current) orbitRef.current.enabled = true
+            const pos = selectedObject.position
+            const quat = selectedObject.quaternion
+            const payload: [number, number, number, number, number, number, number] = [
+              pos.x,
+              pos.y,
+              pos.z,
+              quat.x,
+              quat.y,
+              quat.z,
+              quat.w,
+            ]
+            const key = payload.map((v) => v.toFixed(6)).join(',')
+            if (lastTransformRef.current === key) return
+            lastTransformRef.current = key
+            onTransformCommit(selectedId!, [pos.x, pos.y, pos.z], [quat.x, quat.y, quat.z, quat.w])
+          }}
+        />
+      )}
     </Canvas>
   )
 }

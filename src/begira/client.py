@@ -67,6 +67,89 @@ class BegiraClient:
                 raise RuntimeError(f"Failed to get viewer settings: {res.status_code} {res.text}")
             return dict(res.json())
 
+    def reset_project(self, *, timeout_s: float = 10.0) -> None:
+        """Clear all elements from the server."""
+        import httpx
+
+        with httpx.Client(base_url=self.base_url, timeout=timeout_s) as client:
+            res = client.post("/api/reset")
+            if res.status_code >= 400:
+                raise RuntimeError(f"Failed to reset project: {res.status_code} {res.text}")
+
+    def delete_element(self, element_id: str, *, timeout_s: float = 10.0) -> None:
+        """Soft-delete an element."""
+        import httpx
+
+        with httpx.Client(base_url=self.base_url, timeout=timeout_s) as client:
+            res = client.delete(f"/api/elements/{element_id}")
+            if res.status_code >= 400:
+                raise RuntimeError(f"Failed to delete element: {res.status_code} {res.text}")
+
+    def set_element_visibility(self, element_id: str, visible: bool, *, timeout_s: float = 10.0) -> None:
+        """Toggle element visibility."""
+        import httpx
+
+        with httpx.Client(base_url=self.base_url, timeout=timeout_s) as client:
+            res = client.patch(f"/api/elements/{element_id}/meta", json={"visible": bool(visible)})
+            if res.status_code >= 400:
+                raise RuntimeError(f"Failed to update visibility: {res.status_code} {res.text}")
+
+    def log_transform(
+        self,
+        element_id: str,
+        *,
+        position: tuple[float, float, float] | list[float] | None = None,
+        rotation: tuple[float, float, float, float] | list[float] | None = None,
+        timeout_s: float = 10.0,
+    ) -> None:
+        """Update the pose of an element (position + rotation quaternion)."""
+        import httpx
+
+        payload: dict[str, object] = {}
+        if position is not None:
+            payload["position"] = [float(x) for x in position]
+        if rotation is not None:
+            payload["rotation"] = [float(x) for x in rotation]
+        if not payload:
+            return
+
+        with httpx.Client(base_url=self.base_url, timeout=timeout_s) as client:
+            res = client.patch(f"/api/elements/{element_id}/meta", json=payload)
+            if res.status_code >= 400:
+                raise RuntimeError(f"Failed to update transform: {res.status_code} {res.text}")
+
+    def log_camera(
+        self,
+        name: str,
+        *,
+        position: tuple[float, float, float] | list[float] = (0.0, 0.0, 0.0),
+        rotation: tuple[float, float, float, float] | list[float] = (0.0, 0.0, 0.0, 1.0),
+        fov: float = 60.0,
+        near: float = 0.01,
+        far: float = 1000.0,
+        element_id: str | None = None,
+        timeout_s: float = 10.0,
+    ) -> str:
+        """Create/update a camera element."""
+        import httpx
+
+        payload = {
+            "name": name,
+            "position": [float(x) for x in position],
+            "rotation": [float(x) for x in rotation],
+            "fov": float(fov),
+            "near": float(near),
+            "far": float(far),
+            "elementId": element_id,
+        }
+
+        with httpx.Client(base_url=self.base_url, timeout=timeout_s) as client:
+            res = client.post("/api/elements/cameras", json=payload)
+            if res.status_code >= 400:
+                raise RuntimeError(f"Failed to create camera: {res.status_code} {res.text}")
+            data = res.json()
+            return str(data.get("id"))
+
     def log_points(
         self,
         name: str,

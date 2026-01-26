@@ -1,39 +1,30 @@
-import { useEffect, useMemo, useState } from 'react'
-import { fetchBinaryPayload, fetchGaussianElementMeta, GaussianSplatElementMeta } from './api'
-import { decodeGaussians, DecodedGaussians } from './gaussiansGeometry'
+import { useEffect, useState } from 'react'
+import { fetchCameraElementMeta, type CameraElementMeta } from './api'
 
-export type UseGaussiansState =
+export type UseCameraState =
   | { status: 'loading' }
   | { status: 'error'; error: Error }
-  | { status: 'ready'; meta: GaussianSplatElementMeta; decoded: DecodedGaussians }
+  | { status: 'ready'; meta: CameraElementMeta }
 
-export function useGaussians(elementId: string): UseGaussiansState {
-  const [meta, setMeta] = useState<GaussianSplatElementMeta | null>(null)
-  const [payload, setPayload] = useState<ArrayBuffer | null>(null)
+export function useCamera(elementId: string): UseCameraState {
+  const [meta, setMeta] = useState<CameraElementMeta | null>(null)
   const [error, setError] = useState<Error | null>(null)
 
   useEffect(() => {
     if (!elementId) {
       setMeta(null)
-      setPayload(null)
       setError(null)
       return
     }
 
     let cancelled = false
     setMeta(null)
-    setPayload(null)
     setError(null)
 
-    fetchGaussianElementMeta(elementId)
+    fetchCameraElementMeta(elementId)
       .then((m) => {
         if (cancelled) return
         setMeta(m)
-        return fetchBinaryPayload(m.payloads.gaussians.url)
-      })
-      .then((buf) => {
-        if (cancelled || !buf) return
-        setPayload(buf)
       })
       .catch((e: unknown) => {
         if (cancelled) return
@@ -51,33 +42,30 @@ export function useGaussians(elementId: string): UseGaussiansState {
 
     const tick = async () => {
       try {
-        const m = await fetchGaussianElementMeta(elementId)
+        const m = await fetchCameraElementMeta(elementId)
         if (cancelled) return
         setMeta((prev) => {
           if (!prev || prev.revision !== m.revision) return m
           if (String(prev.visible) !== String(m.visible)) return m
           if (JSON.stringify(prev.position) !== JSON.stringify(m.position)) return m
           if (JSON.stringify(prev.rotation) !== JSON.stringify(m.rotation)) return m
+          if (prev.fov !== m.fov || prev.near !== m.near || prev.far !== m.far) return m
           return prev
         })
       } catch {
-        // ignore
+        // ignore periodic errors
       }
     }
 
-    const id = window.setInterval(() => void tick(), 750)
+    const id = window.setInterval(() => void tick(), 1500)
+    void tick()
     return () => {
       cancelled = true
       window.clearInterval(id)
     }
   }, [elementId])
 
-  const decoded = useMemo(() => {
-    if (!meta || !payload) return null
-    return decodeGaussians(meta, payload)
-  }, [meta, payload])
-
   if (error) return { status: 'error', error }
-  if (!elementId || !meta || !payload || !decoded) return { status: 'loading' }
-  return { status: 'ready', meta, decoded }
+  if (!meta) return { status: 'loading' }
+  return { status: 'ready', meta }
 }

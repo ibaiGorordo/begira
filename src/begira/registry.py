@@ -3,10 +3,11 @@ from __future__ import annotations
 import threading
 import time
 import uuid
+from dataclasses import replace
 
 import numpy as np
 
-from .elements import ElementBase, PointCloudElement, GaussianSplatElement
+from .elements import ElementBase, PointCloudElement, GaussianSplatElement, CameraElement
 
 
 class InMemoryRegistry:
@@ -39,37 +40,101 @@ class InMemoryRegistry:
 
     def list_elements(self) -> list[ElementBase]:
         with self._lock:
-            return list(self._elements.values())
+            return [e for e in self._elements.values() if not getattr(e, "deleted", False)]
 
     def get_element(self, element_id: str) -> ElementBase | None:
         with self._lock:
             return self._elements.get(element_id)
 
-    def update_pointcloud_settings(self, element_id: str, *, point_size: float | None = None) -> PointCloudElement:
-        if point_size is not None and (not np.isfinite(point_size) or point_size <= 0):
-            raise ValueError("point_size must be a finite positive number")
+    def reset(self) -> None:
+        with self._lock:
+            now = time.time()
+            for key, prev in list(self._elements.items()):
+                updated = replace(
+                    prev,
+                    deleted=False,
+                    visible=True,
+                    position=(0.0, 0.0, 0.0),
+                    rotation=(0.0, 0.0, 0.0, 1.0),
+                    revision=prev.revision + 1,
+                    updated_at=now,
+                )
+                self._elements[key] = updated
+            self._global_revision += 1
 
+    def delete_element(self, element_id: str) -> ElementBase:
         with self._lock:
             prev = self._elements.get(element_id)
-            if not isinstance(prev, PointCloudElement):
+            if prev is None:
                 raise KeyError(element_id)
+            if getattr(prev, "deleted", False):
+                return prev
+            self._global_revision += 1
+            now = time.time()
+            updated = replace(prev, deleted=True, revision=prev.revision + 1, updated_at=now)
+            self._elements[element_id] = updated
+            return updated
+
+    def update_element_meta(
+        self,
+        element_id: str,
+        *,
+        position: tuple[float, float, float] | None = None,
+        rotation: tuple[float, float, float, float] | None = None,
+        visible: bool | None = None,
+        deleted: bool | None = None,
+        point_size: float | None = None,
+        fov: float | None = None,
+        near: float | None = None,
+        far: float | None = None,
+    ) -> ElementBase:
+        with self._lock:
+            prev = self._elements.get(element_id)
+            if prev is None:
+                raise KeyError(element_id)
+
+            updates: dict[str, object] = {}
+            if position is not None:
+                updates["position"] = position
+            if rotation is not None:
+                updates["rotation"] = rotation
+            if visible is not None:
+                updates["visible"] = visible
+            if deleted is not None:
+                updates["deleted"] = deleted
+
+            if isinstance(prev, PointCloudElement):
+                if point_size is not None:
+                    if not np.isfinite(point_size) or point_size <= 0:
+                        raise ValueError("point_size must be a finite positive number")
+                    updates["point_size"] = float(point_size)
+            elif isinstance(prev, GaussianSplatElement):
+                if point_size is not None:
+                    if not np.isfinite(point_size) or point_size <= 0:
+                        raise ValueError("point_size must be a finite positive number")
+                    updates["point_size"] = float(point_size)
+            elif isinstance(prev, CameraElement):
+                if fov is not None:
+                    updates["fov"] = float(fov)
+                if near is not None:
+                    updates["near"] = float(near)
+                if far is not None:
+                    updates["far"] = float(far)
+
+            if not updates:
+                return prev
 
             self._global_revision += 1
             now = time.time()
+            updated = replace(prev, **updates, revision=prev.revision + 1, updated_at=now)
+            self._elements[element_id] = updated
+            return updated
 
-            pc = PointCloudElement(
-                id=prev.id,
-                type="pointcloud",
-                name=prev.name,
-                positions=prev.positions,
-                colors=prev.colors,
-                point_size=float(point_size) if point_size is not None else prev.point_size,
-                revision=prev.revision + 1,
-                created_at=prev.created_at,
-                updated_at=now,
-            )
-            self._elements[element_id] = pc
-            return pc
+    def update_pointcloud_settings(self, element_id: str, *, point_size: float | None = None) -> PointCloudElement:
+        updated = self.update_element_meta(element_id, point_size=point_size)
+        if not isinstance(updated, PointCloudElement):
+            raise KeyError(element_id)
+        return updated
 
     def upsert_pointcloud(
         self,
@@ -126,6 +191,10 @@ class InMemoryRegistry:
                     revision=1,
                     created_at=now,
                     updated_at=now,
+                    position=(0.0, 0.0, 0.0),
+                    rotation=(0.0, 0.0, 0.0, 1.0),
+                    visible=True,
+                    deleted=False,
                 )
             else:
                 pc = PointCloudElement(
@@ -138,39 +207,20 @@ class InMemoryRegistry:
                     revision=prev_pc.revision + 1,
                     created_at=prev_pc.created_at,
                     updated_at=now,
+                    position=prev_pc.position,
+                    rotation=prev_pc.rotation,
+                    visible=prev_pc.visible,
+                    deleted=prev_pc.deleted,
                 )
 
             self._elements[element_id] = pc
             return pc
 
     def update_gaussians_settings(self, element_id: str, *, point_size: float | None = None) -> GaussianSplatElement:
-        if point_size is not None and (not np.isfinite(point_size) or point_size <= 0):
-            raise ValueError("point_size must be a finite positive number")
-
-        with self._lock:
-            prev = self._elements.get(element_id)
-            if not isinstance(prev, GaussianSplatElement):
-                raise KeyError(element_id)
-
-            self._global_revision += 1
-            now = time.time()
-
-            gs = GaussianSplatElement(
-                id=prev.id,
-                type="gaussians",
-                name=prev.name,
-                positions=prev.positions,
-                sh0=prev.sh0,
-                opacity=prev.opacity,
-                scales=prev.scales,
-                rotations=prev.rotations,
-                point_size=float(point_size) if point_size is not None else prev.point_size,
-                revision=prev.revision + 1,
-                created_at=prev.created_at,
-                updated_at=now,
-            )
-            self._elements[element_id] = gs
-            return gs
+        updated = self.update_element_meta(element_id, point_size=point_size)
+        if not isinstance(updated, GaussianSplatElement):
+            raise KeyError(element_id)
+        return updated
 
     def upsert_gaussians(
         self,
@@ -207,6 +257,10 @@ class InMemoryRegistry:
                     revision=1,
                     created_at=now,
                     updated_at=now,
+                    position=(0.0, 0.0, 0.0),
+                    rotation=(0.0, 0.0, 0.0, 1.0),
+                    visible=True,
+                    deleted=False,
                 )
             else:
                 gs = GaussianSplatElement(
@@ -222,10 +276,70 @@ class InMemoryRegistry:
                     revision=prev_gs.revision + 1,
                     created_at=prev_gs.created_at,
                     updated_at=now,
+                    position=prev_gs.position,
+                    rotation=prev_gs.rotation,
+                    visible=prev_gs.visible,
+                    deleted=prev_gs.deleted,
                 )
 
             self._elements[element_id] = gs
             return gs
+
+    def upsert_camera(
+        self,
+        *,
+        name: str,
+        position: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        rotation: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
+        fov: float = 60.0,
+        near: float = 0.01,
+        far: float = 1000.0,
+        element_id: str | None = None,
+    ) -> CameraElement:
+        with self._lock:
+            if element_id is None:
+                element_id = uuid.uuid4().hex
+
+            self._global_revision += 1
+            now = time.time()
+            prev = self._elements.get(element_id)
+            prev_cam = prev if isinstance(prev, CameraElement) else None
+
+            if prev_cam is None:
+                cam = CameraElement(
+                    id=element_id,
+                    type="camera",
+                    name=name,
+                    fov=float(fov),
+                    near=float(near),
+                    far=float(far),
+                    revision=1,
+                    created_at=now,
+                    updated_at=now,
+                    position=position,
+                    rotation=rotation,
+                    visible=True,
+                    deleted=False,
+                )
+            else:
+                cam = CameraElement(
+                    id=prev_cam.id,
+                    type="camera",
+                    name=name,
+                    fov=float(fov),
+                    near=float(near),
+                    far=float(far),
+                    revision=prev_cam.revision + 1,
+                    created_at=prev_cam.created_at,
+                    updated_at=now,
+                    position=position,
+                    rotation=rotation,
+                    visible=prev_cam.visible,
+                    deleted=prev_cam.deleted,
+                )
+
+            self._elements[element_id] = cam
+            return cam
 
 
 REGISTRY = InMemoryRegistry()

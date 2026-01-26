@@ -9,13 +9,14 @@ import numpy as np
 ElementType = Literal[
     "pointcloud",
     "gaussians",
+    "camera",
     # Future:
     # "lines3d",
     # "boxes3d",
 ]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class ElementBase:
     """Common metadata for anything renderable in the viewer.
 
@@ -30,6 +31,10 @@ class ElementBase:
     revision: int
     created_at: float
     updated_at: float
+    position: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    rotation: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0)
+    visible: bool = True
+    deleted: bool = False
 
 
 @dataclass(frozen=True)
@@ -58,3 +63,11 @@ class GaussianSplatElement(ElementBase):
     @property
     def count(self) -> int:
         return int(self.positions.shape[0])
+
+
+@dataclass(frozen=True)
+class CameraElement(ElementBase):
+    type: Literal["camera"]
+    fov: float
+    near: float
+    far: float

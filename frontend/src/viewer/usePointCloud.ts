@@ -55,7 +55,11 @@ export function usePointCloud(cloudId: string): UsePointCloudState {
         const m = await fetchPointCloudElementMeta(cloudId)
         if (cancelled) return
         setMeta((prev) => {
-          if (!prev || prev.revision !== m.revision || prev.pointSize !== m.pointSize) return m
+          if (!prev || prev.revision !== m.revision) return m
+          if (prev.pointSize !== m.pointSize) return m
+          if (String(prev.visible) !== String(m.visible)) return m
+          if (JSON.stringify(prev.position) !== JSON.stringify(m.position)) return m
+          if (JSON.stringify(prev.rotation) !== JSON.stringify(m.rotation)) return m
           return prev
         })
       } catch {
