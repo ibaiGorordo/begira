@@ -240,6 +240,21 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [])
 
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase()
+      if (tag === 'input' || tag === 'textarea' || (e.target as HTMLElement | null)?.isContentEditable) return
+      const key = e.key.toLowerCase()
+      if (key === 't') {
+        setTransformMode('translate')
+      } else if (key === 'r') {
+        setTransformMode('rotate')
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
+
   const applyVisibility = async (id: string, visible: boolean) => {
     const prev = elements?.find((e) => e.id === id)
     await runUserAction({

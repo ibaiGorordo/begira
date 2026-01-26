@@ -67,9 +67,11 @@ function Cloud({
 
   useEffect(() => {
     if (!onRegisterObject) return
+    if (state.status !== 'ready') return
+    if (!groupRef.current) return
     onRegisterObject(cloudId, groupRef.current)
     return () => onRegisterObject(cloudId, null)
-  }, [cloudId, onRegisterObject])
+  }, [cloudId, onRegisterObject, state.status])
 
   useEffect(() => {
     if (!meta || !groupRef.current) return

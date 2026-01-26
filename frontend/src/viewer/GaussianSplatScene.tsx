@@ -23,9 +23,11 @@ function Gaussians({
   const groupRef = useRef<THREE.Group>(null)
   useEffect(() => {
     if (!onRegisterObject) return
+    if (state.status !== 'ready') return
+    if (!groupRef.current) return
     onRegisterObject(elementId, groupRef.current)
     return () => onRegisterObject(elementId, null)
-  }, [elementId, onRegisterObject])
+  }, [elementId, onRegisterObject, state.status])
 
   useEffect(() => {
     if (!meta || !groupRef.current) return

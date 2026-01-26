@@ -416,6 +416,7 @@ export default function PointCloudCanvas({
   const objectMapRef = useRef<Map<string, THREE.Object3D>>(new Map())
   const [objectsVersion, setObjectsVersion] = useState(0)
   const lastTransformRef = useRef<string | null>(null)
+  const lastLocalPoseRef = useRef<string | null>(null)
   const registerObject = useCallback((id: string, obj: THREE.Object3D | null) => {
     if (obj) objectMapRef.current.set(id, obj)
     else objectMapRef.current.delete(id)
@@ -555,6 +556,44 @@ export default function PointCloudCanvas({
         <TransformControls
           object={selectedObject}
           mode={transformMode}
+          space="world"
+          onObjectChange={() => {
+            if (!selectedId || !selectedObject) return
+            const pos = selectedObject.position
+            const quat = selectedObject.quaternion
+            const qLen = Math.hypot(quat.x, quat.y, quat.z, quat.w) || 1
+            const rotation: [number, number, number, number] = [
+              quat.x / qLen,
+              quat.y / qLen,
+              quat.z / qLen,
+              quat.w / qLen,
+            ]
+            const payload: [number, number, number, number, number, number, number] = [
+              pos.x,
+              pos.y,
+              pos.z,
+              rotation[0],
+              rotation[1],
+              rotation[2],
+              rotation[3],
+            ]
+            const key = payload.map((v) => v.toFixed(6)).join(',')
+            if (lastLocalPoseRef.current === key) return
+            lastLocalPoseRef.current = key
+            try {
+              const anyWin = window as any
+              if (!anyWin.__begira_local_pose) anyWin.__begira_local_pose = {}
+              anyWin.__begira_local_pose[selectedId] = {
+                position: [pos.x, pos.y, pos.z],
+                rotation,
+              }
+              window.dispatchEvent(
+                new CustomEvent('begira_local_pose_changed', {
+                  detail: { id: selectedId, position: [pos.x, pos.y, pos.z], rotation },
+                }),
+              )
+            } catch {}
+          }}
           onMouseDown={() => {
             if (orbitRef.current) orbitRef.current.enabled = false
           }}

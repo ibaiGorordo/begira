@@ -263,6 +263,34 @@ export default function Inspector({
   }, [position, rotation, selected?.id, onPoseCommit])
 
   useEffect(() => {
+    const handler = (e: any) => {
+      if (!selected) return
+      if (e?.detail?.id !== selected.id) return
+      const pos = e.detail.position as [number, number, number] | undefined
+      const rot = e.detail.rotation as [number, number, number, number] | undefined
+      if (!pos || !rot) return
+      suppressPoseCommitRef.current = true
+      setPosition((prev) => (JSON.stringify(prev) === JSON.stringify(pos) ? prev : pos))
+      setRotation((prev) => (JSON.stringify(prev) === JSON.stringify(rot) ? prev : rot))
+      try {
+        const q = new THREE.Quaternion(rot[0], rot[1], rot[2], rot[3]).normalize()
+        const euler = new THREE.Euler().setFromQuaternion(q, 'XYZ')
+        const nextEuler: [number, number, number] = [
+          THREE.MathUtils.radToDeg(euler.x),
+          THREE.MathUtils.radToDeg(euler.y),
+          THREE.MathUtils.radToDeg(euler.z),
+        ]
+        setRotationEuler((prev) => (JSON.stringify(prev) === JSON.stringify(nextEuler) ? prev : nextEuler))
+      } catch {}
+      window.setTimeout(() => {
+        suppressPoseCommitRef.current = false
+      }, 0)
+    }
+    window.addEventListener('begira_local_pose_changed', handler)
+    return () => window.removeEventListener('begira_local_pose_changed', handler)
+  }, [selected?.id])
+
+  useEffect(() => {
     let cancelled = false
     if (!selected) return
 
