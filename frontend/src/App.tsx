@@ -46,32 +46,15 @@ function CollapseHandle({
 
   return (
     <div
+      className="panel-handle"
       onMouseDown={onResizeStart}
       style={{
-        width: 14,
-        minWidth: 14,
-        flex: '0 0 14px',
-        position: 'relative',
-        zIndex: 4,
-        background: '#0b1020',
-        borderLeft: isLeft ? 0 : '1px solid #1b2235',
-        borderRight: isLeft ? '1px solid #1b2235' : 0,
+        zIndex: 7,
+        borderLeft: isLeft ? 0 : '1px solid var(--line)',
+        borderRight: isLeft ? '1px solid var(--line)' : 0,
         cursor: open ? 'col-resize' : 'default',
       }}
     >
-      <div
-        style={{
-          position: 'absolute',
-          top: 0,
-          bottom: 0,
-          left: '50%',
-          width: 1,
-          transform: 'translateX(-50%)',
-          background: '#1b2235',
-          opacity: open ? 0.8 : 0.45,
-          pointerEvents: 'none',
-        }}
-      />
       <button
         type="button"
         aria-label={label}
@@ -79,33 +62,33 @@ function CollapseHandle({
         onMouseDown={(e) => e.stopPropagation()}
         onClick={onToggle}
         style={{
-          position: 'absolute',
-          top: '50%',
-          left: '50%',
-          transform: 'translate(-50%, -50%)',
-          width: 20,
-          height: 54,
-          padding: 0,
-          borderRadius: 999,
-          border: '1px solid #1b2235',
-          background: '#0f1630',
-          color: '#e8ecff',
-          cursor: 'pointer',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          opacity: 0.9,
-        }}
-        onMouseEnter={(e) => {
-          ;(e.currentTarget as HTMLButtonElement).style.opacity = '1'
-        }}
-        onMouseLeave={(e) => {
-          ;(e.currentTarget as HTMLButtonElement).style.opacity = '0.9'
+          opacity: open ? 1 : 0.85,
         }}
       >
         <span style={{ fontSize: 12, lineHeight: 1 }}>{glyph}</span>
       </button>
     </div>
+  )
+}
+
+function EdgeReopenButton({
+  side,
+  onClick,
+}: {
+  side: 'left' | 'right'
+  onClick: () => void
+}) {
+  const isLeft = side === 'left'
+  return (
+    <button
+      type="button"
+      className={`edge-reopen edge-reopen-${side}`}
+      aria-label={isLeft ? 'Expand scene panel' : 'Expand inspector panel'}
+      title={isLeft ? 'Expand scene panel' : 'Expand inspector panel'}
+      onClick={onClick}
+    >
+      <span style={{ fontSize: 12, lineHeight: 1 }}>{isLeft ? '▶' : '◀'}</span>
+    </button>
   )
 }
 
@@ -397,6 +380,46 @@ export default function App() {
     } catch {}
   }
 
+  const getLocalPose = (id: string): { position: [number, number, number]; rotation: [number, number, number, number] } | null => {
+    try {
+      const anyWin = window as any
+      const pose = anyWin.__begira_local_pose?.[id]
+      if (!pose) return null
+      const pos = pose.position
+      const rot = pose.rotation
+      if (!Array.isArray(pos) || pos.length !== 3) return null
+      if (!Array.isArray(rot) || rot.length !== 4) return null
+      return {
+        position: [Number(pos[0]), Number(pos[1]), Number(pos[2])],
+        rotation: [Number(rot[0]), Number(rot[1]), Number(rot[2]), Number(rot[3])],
+      }
+    } catch {
+      return null
+    }
+  }
+
+  const extractFreshElementPatch = (id: string, meta: any): Partial<ElementInfo> => {
+    const patch: Partial<ElementInfo> = {}
+    const local = getLocalPose(id)
+    if (local) {
+      patch.position = local.position
+      patch.rotation = local.rotation
+      return patch
+    }
+
+    if (Array.isArray(meta?.position) && meta.position.length === 3) {
+      patch.position = [Number(meta.position[0]), Number(meta.position[1]), Number(meta.position[2])]
+    }
+    if (Array.isArray(meta?.rotation) && meta.rotation.length === 4) {
+      patch.rotation = [Number(meta.rotation[0]), Number(meta.rotation[1]), Number(meta.rotation[2]), Number(meta.rotation[3])]
+    }
+    if (typeof meta?.fov === 'number' && Number.isFinite(meta.fov)) patch.fov = meta.fov
+    if (typeof meta?.near === 'number' && Number.isFinite(meta.near)) patch.near = meta.near
+    if (typeof meta?.far === 'number' && Number.isFinite(meta.far)) patch.far = meta.far
+    if (typeof meta?.revision === 'number' && Number.isFinite(meta.revision)) patch.revision = meta.revision
+    return patch
+  }
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase()
@@ -421,11 +444,16 @@ export default function App() {
       label: visible ? 'Show' : 'Hide',
       do: async () => {
         await updateElementMeta(id, { visible })
-        setElements((cur) => (cur ? cur.map((e) => (e.id === id ? { ...e, visible } : e)) : cur))
+        const freshMeta = visible ? await fetchElementMeta(id).catch(() => null) : null
+        const patch = freshMeta ? extractFreshElementPatch(id, freshMeta) : {}
+        setElements((cur) => (cur ? cur.map((e) => (e.id === id ? { ...e, ...patch, visible } : e)) : cur))
       },
       undo: async () => {
-        await updateElementMeta(id, { visible: prev?.visible !== false })
-        setElements((cur) => (cur ? cur.map((e) => (e.id === id ? { ...e, visible: prev?.visible !== false } : e)) : cur))
+        const undoVisible = prev?.visible !== false
+        await updateElementMeta(id, { visible: undoVisible })
+        const freshMeta = undoVisible ? await fetchElementMeta(id).catch(() => null) : null
+        const patch = freshMeta ? extractFreshElementPatch(id, freshMeta) : {}
+        setElements((cur) => (cur ? cur.map((e) => (e.id === id ? { ...e, ...patch, visible: undoVisible } : e)) : cur))
       },
     })
   }
@@ -547,133 +575,108 @@ export default function App() {
   }
 
   return (
-    <div className="app" style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
-      <div className="header" style={{ borderBottom: '1px solid #1b2235', background: '#0b1020', color: '#e8ecff' }}>
-        <strong>begira</strong>
-        <span style={{ opacity: 0.7 }}>viewer</span>
-        <div style={{ flex: 1 }} />
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <button
-            onClick={() => void undo()}
-            disabled={historyCounts.undo === 0 || isResetting}
-            style={{
-              padding: '4px 8px',
-              borderRadius: 6,
-              border: '1px solid #1b2235',
-              background: '#0f1630',
-              color: '#e8ecff',
-              cursor: 'pointer',
-              fontSize: 12,
-              opacity: historyCounts.undo === 0 || isResetting ? 0.5 : 1,
-            }}
-          >
-            Undo
-          </button>
-          <button
-            onClick={() => void redo()}
-            disabled={historyCounts.redo === 0 || isResetting}
-            style={{
-              padding: '4px 8px',
-              borderRadius: 6,
-              border: '1px solid #1b2235',
-              background: '#0f1630',
-              color: '#e8ecff',
-              cursor: 'pointer',
-              fontSize: 12,
-              opacity: historyCounts.redo === 0 || isResetting ? 0.5 : 1,
-            }}
-          >
-            Redo
-          </button>
-          <button
-            onClick={() => void resetAll()}
-            style={{
-              padding: '4px 8px',
-              borderRadius: 6,
-              border: '1px solid #1b2235',
-              background: '#0f1630',
-              color: '#e8ecff',
-              cursor: 'pointer',
-              fontSize: 12,
-            }}
-          >
-            Reset
-          </button>
+    <div className="app">
+      <div className="header">
+        <div className="brand-mark" />
+        <div className="brand-title">
+          <strong>begira</strong>
+          <span>viewer</span>
         </div>
-        {error && <span style={{ color: 'crimson' }}>{error}</span>}
+        <div className="header-right">
+          {error && <span className="header-error">{error}</span>}
+          <div className="header-actions">
+            <button
+              className="toolbar-btn"
+              onClick={() => void undo()}
+              disabled={historyCounts.undo === 0 || isResetting}
+              style={{ opacity: historyCounts.undo === 0 || isResetting ? 0.5 : 1 }}
+            >
+              Undo
+            </button>
+            <button
+              className="toolbar-btn"
+              onClick={() => void redo()}
+              disabled={historyCounts.redo === 0 || isResetting}
+              style={{ opacity: historyCounts.redo === 0 || isResetting ? 0.5 : 1 }}
+            >
+              Redo
+            </button>
+            <button className="toolbar-btn danger" onClick={() => void resetAll()}>
+              Reset
+            </button>
+          </div>
+        </div>
       </div>
 
-      <div className="viewer" style={{ display: 'flex', flex: 1, minHeight: 0, background: '#0b1020', position: 'relative' }}>
+      <div className="viewer">
         {leftOpen && (
           <div
+            className="side-panel"
             style={{
               width: leftWidth,
               minWidth: leftWidth,
               maxWidth: leftWidth,
-              borderRight: '1px solid #1b2235',
-              background: '#0f1630',
-              color: '#e8ecff',
               flex: '0 0 auto',
-              position: 'relative',
-              zIndex: 5,
             }}
           >
-            <Hierarchy
-              {...({
-                elements,
-                selectedId,
-                onSelect: setSelectedId,
-                onFocus: (id: string) => {
-                  const el = elements?.find((e) => e.id === id)
-                  if (el?.type === 'image') {
-                    openImageView(id)
-                    return
-                  }
-                  setFocusTarget(id)
-                },
-                onToggleVisibility: (id: string, visible: boolean) => void applyVisibility(id, visible),
-                onDelete: (id: string) => void removeElement(id),
-                onAddCamera: () => void addCameraFromView(),
-                views: hierarchyViews,
-                onActivateView: (viewId: string) => {
-                  if (viewId === MAIN_3D_VIEW_ID) return
-                  const imageId = imageIdFromViewId(viewId)
-                  if (!imageId) return
-                  openImageView(imageId)
-                },
-                onToggleViewVisibility: (viewId: string, visible: boolean) => {
-                  if (viewId === MAIN_3D_VIEW_ID) {
-                    setThreeDViewVisible(visible)
-                    return
-                  }
-                  const imageId = imageIdFromViewId(viewId)
-                  if (!imageId) return
-                  setImageViewFlags(imageId, { visible })
-                  void applyVisibility(imageId, visible)
-                },
-                onDeleteView: (viewId: string) => {
-                  const imageId = imageIdFromViewId(viewId)
-                  if (!imageId) return
-                  setImageViewFlags(imageId, { deleted: true, visible: false })
-                  setImageViewOrder((prev) => prev.filter((id) => id !== imageId))
-                },
-                onMoveView: (viewId: string, direction: 'up' | 'down') => {
-                  const imageId = imageIdFromViewId(viewId)
-                  if (!imageId) return
-                  setImageViewOrder((prev) => {
-                    const idx = prev.indexOf(imageId)
-                    if (idx < 0) return prev
-                    const nextIdx = direction === 'up' ? idx - 1 : idx + 1
-                    if (nextIdx < 0 || nextIdx >= prev.length) return prev
-                    const out = [...prev]
-                    const tmp = out[idx]
-                    out[idx] = out[nextIdx]
-                    out[nextIdx] = tmp
-                    return out
-                  })
-                },
-              } satisfies HierarchyProps)}
-            />
+            <div className="panel-scroll">
+              <Hierarchy
+                {...({
+                  elements,
+                  selectedId,
+                  onSelect: setSelectedId,
+                  onFocus: (id: string) => {
+                    const el = elements?.find((e) => e.id === id)
+                    if (el?.type === 'image') {
+                      openImageView(id)
+                      return
+                    }
+                    setFocusTarget(id)
+                  },
+                  onToggleVisibility: (id: string, visible: boolean) => void applyVisibility(id, visible),
+                  onDelete: (id: string) => void removeElement(id),
+                  onAddCamera: () => void addCameraFromView(),
+                  views: hierarchyViews,
+                  onActivateView: (viewId: string) => {
+                    if (viewId === MAIN_3D_VIEW_ID) return
+                    const imageId = imageIdFromViewId(viewId)
+                    if (!imageId) return
+                    openImageView(imageId)
+                  },
+                  onToggleViewVisibility: (viewId: string, visible: boolean) => {
+                    if (viewId === MAIN_3D_VIEW_ID) {
+                      setThreeDViewVisible(visible)
+                      return
+                    }
+                    const imageId = imageIdFromViewId(viewId)
+                    if (!imageId) return
+                    setImageViewFlags(imageId, { visible })
+                    void applyVisibility(imageId, visible)
+                  },
+                  onDeleteView: (viewId: string) => {
+                    const imageId = imageIdFromViewId(viewId)
+                    if (!imageId) return
+                    setImageViewFlags(imageId, { deleted: true, visible: false })
+                    setImageViewOrder((prev) => prev.filter((id) => id !== imageId))
+                  },
+                  onMoveView: (viewId: string, direction: 'up' | 'down') => {
+                    const imageId = imageIdFromViewId(viewId)
+                    if (!imageId) return
+                    setImageViewOrder((prev) => {
+                      const idx = prev.indexOf(imageId)
+                      if (idx < 0) return prev
+                      const nextIdx = direction === 'up' ? idx - 1 : idx + 1
+                      if (nextIdx < 0 || nextIdx >= prev.length) return prev
+                      const out = [...prev]
+                      const tmp = out[idx]
+                      out[idx] = out[nextIdx]
+                      out[nextIdx] = tmp
+                      return out
+                    })
+                  },
+                } satisfies HierarchyProps)}
+              />
+            </div>
           </div>
         )}
 
@@ -684,7 +687,7 @@ export default function App() {
           onResizeStart={(e) => beginResize('left', e)}
         />
 
-        <div style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: 'hidden', position: 'relative', zIndex: 1 }}>
+        <div className="workspace-shell" style={{ flex: 1 }}>
           <DockWorkspace
             ref={workspaceRef}
             pointclouds={pointclouds}
@@ -707,37 +710,39 @@ export default function App() {
           />
         </div>
 
-        <CollapseHandle
-          side="right"
-          open={rightOpen}
-          onToggle={() => setRightOpen((v) => !v)}
-          onResizeStart={(e) => beginResize('right', e)}
-        />
+        {rightOpen ? (
+          <CollapseHandle
+            side="right"
+            open={rightOpen}
+            onToggle={() => setRightOpen((v) => !v)}
+            onResizeStart={(e) => beginResize('right', e)}
+          />
+        ) : (
+          <EdgeReopenButton side="right" onClick={() => setRightOpen(true)} />
+        )}
 
         {rightOpen && (
           <div
+            className="side-panel right"
             style={{
               width: rightWidth,
               minWidth: rightWidth,
               maxWidth: rightWidth,
-              borderLeft: '1px solid #1b2235',
-              background: '#0f1630',
-              color: '#e8ecff',
               flex: '0 0 auto',
-              position: 'relative',
-              zIndex: 5,
             }}
           >
-            <Inspector
-              selected={selected}
-              activeCameraId={activeCameraId}
-              onSetActiveCamera={setActiveCameraId}
-              onDelete={(id) => void removeElement(id)}
-              transformMode={transformMode}
-              onTransformModeChange={setTransformMode}
-              onPoseCommit={(id, position, rotation) => void onTransformCommit(id, position, rotation)}
-              lookAtTargets={lookAtTargets}
-            />
+            <div className="panel-scroll">
+              <Inspector
+                selected={selected}
+                activeCameraId={activeCameraId}
+                onSetActiveCamera={setActiveCameraId}
+                onDelete={(id) => void removeElement(id)}
+                transformMode={transformMode}
+                onTransformModeChange={setTransformMode}
+                onPoseCommit={(id, position, rotation) => void onTransformCommit(id, position, rotation)}
+                lookAtTargets={lookAtTargets}
+              />
+            </div>
           </div>
         )}
       </div>

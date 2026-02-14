@@ -25,6 +25,74 @@ export type HierarchyProps = {
   onMoveView: (viewId: string, direction: 'up' | 'down') => void
 }
 
+type IconKind = 'view3d' | 'view2d' | 'pointcloud' | 'gaussians' | 'camera' | 'image'
+
+function iconKindForElement(type: ElementInfo['type']): IconKind {
+  if (type === 'pointcloud') return 'pointcloud'
+  if (type === 'gaussians') return 'gaussians'
+  if (type === 'camera') return 'camera'
+  return 'image'
+}
+
+function MinimalIcon({ kind }: { kind: IconKind }) {
+  if (kind === 'view3d') {
+    return (
+      <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+        <path d="M9.8 10.2 L15.8 10.2" stroke="#cc6b64" strokeWidth="1.5" strokeLinecap="round" />
+        <path d="M9.8 10.2 L9.8 4.2" stroke="#4f9f62" strokeWidth="1.5" strokeLinecap="round" />
+        <path d="M9.8 10.2 L5.3 14.6" stroke="#4d74b8" strokeWidth="1.5" strokeLinecap="round" />
+        <circle cx="9.8" cy="10.2" r="1.2" fill="#4b5f7f" />
+      </svg>
+    )
+  }
+  if (kind === 'view2d') {
+    return (
+      <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+        <path d="M4 15.5 H16" stroke="#4d74b8" strokeWidth="1.5" strokeLinecap="round" />
+        <path d="M4.5 16 V4" stroke="#4f9f62" strokeWidth="1.5" strokeLinecap="round" />
+        <circle cx="4.5" cy="15.5" r="1.2" fill="#4b5f7f" />
+      </svg>
+    )
+  }
+  if (kind === 'pointcloud') {
+    return (
+      <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+        <circle cx="6" cy="12.5" r="1.4" fill="#4d74b8" />
+        <circle cx="9.4" cy="9.8" r="1.4" fill="#5a7fbe" />
+        <circle cx="12.7" cy="12" r="1.4" fill="#688ac5" />
+        <circle cx="8.3" cy="6.4" r="1.4" fill="#7395cc" />
+        <circle cx="13.8" cy="7.4" r="1.4" fill="#7fa0d2" />
+      </svg>
+    )
+  }
+  if (kind === 'gaussians') {
+    return (
+      <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+        <ellipse cx="6.8" cy="12.6" rx="2.45" ry="1.65" transform="rotate(-20 6.8 12.6)" fill="#8e73c6" />
+        <ellipse cx="10.1" cy="7.2" rx="2.6" ry="1.75" transform="rotate(14 10.1 7.2)" fill="#5f8fcb" />
+        <ellipse cx="13.3" cy="12.1" rx="2.4" ry="1.6" transform="rotate(28 13.3 12.1)" fill="#5ca985" />
+      </svg>
+    )
+  }
+  if (kind === 'camera') {
+    return (
+      <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+        <rect x="3.6" y="6.9" width="12.8" height="8.4" rx="2" stroke="#3f6fa3" strokeWidth="1.2" />
+        <path d="M7.1 6.9 L8.4 5.3 H11.6 L12.9 6.9" stroke="#3f6fa3" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+        <circle cx="10" cy="11.1" r="2.2" stroke="#3f6fa3" strokeWidth="1.2" />
+        <circle cx="14.1" cy="8.6" r="0.8" fill="#3f6fa3" />
+      </svg>
+    )
+  }
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+      <rect x="3.8" y="4.4" width="12.4" height="11.2" rx="2" stroke="#8a6a2f" strokeWidth="1.3" />
+      <path d="M5.8 13.2 L8.8 9.9 L11.3 12.1 L13.7 9.4 L16.1 12.8" stroke="#8a6a2f" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx="8" cy="7.5" r="1.1" fill="#8a6a2f" />
+    </svg>
+  )
+}
+
 export default function Hierarchy({
   elements,
   selectedId,
@@ -44,159 +112,132 @@ export default function Hierarchy({
   const reorderableViewIds = views.filter((v) => v.canReorder).map((v) => v.id)
 
   return (
-    <div style={{ padding: 12, width: '100%', boxSizing: 'border-box' }}>
-      <strong>Scene</strong>
-      <div style={{ marginTop: 8 }}>
-        <button
-          onClick={onAddCamera}
-          style={{
-            padding: '6px 8px',
-            borderRadius: 6,
-            border: '1px solid #1b2235',
-            background: '#0f1630',
-            color: '#e8ecff',
-            cursor: 'pointer',
-            fontSize: 12,
-          }}
-        >
-          Add Camera
-        </button>
+    <div className="scene-layout">
+      <div>
+        <h2 className="panel-title">Scene</h2>
+        <div className="panel-subtitle">Sources and blueprint</div>
       </div>
 
-      <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {views.map((view) => {
-          const reorderIndex = reorderableViewIds.indexOf(view.id)
-          const isFirstReorderable = reorderIndex <= 0
-          const isLastReorderable = reorderIndex < 0 || reorderIndex >= reorderableViewIds.length - 1
+      <div className="section-card">
+        <div className="section-head">Actions</div>
+        <div style={{ padding: 10 }}>
+          <button className="toolbar-btn" onClick={onAddCamera}>
+            Add Camera
+          </button>
+        </div>
+      </div>
 
-          return (
-            <div key={view.id} style={{ border: '1px solid #1b2235', borderRadius: 8, background: '#0f1630' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: 6 }}>
-                <input
-                  type="checkbox"
-                  checked={view.visible}
-                  title={view.visible ? 'Hide view' : 'Show view'}
-                  onChange={(e) => onToggleViewVisibility(view.id, e.target.checked)}
-                />
-                <button
-                  type="button"
-                  onClick={() => onActivateView(view.id)}
-                  style={{
-                    flex: 1,
-                    textAlign: 'left',
-                    padding: '6px 8px',
-                    borderRadius: 6,
-                    border: '1px solid #1b2235',
-                    background: '#172242',
-                    color: '#e8ecff',
-                    cursor: 'pointer',
-                  }}
-                  title={view.id}
-                >
-                  <div style={{ fontSize: 13, fontWeight: 700 }}>{view.name}</div>
-                  <div style={{ fontSize: 11, opacity: 0.55, textTransform: 'uppercase' }}>{view.kind} view</div>
-                </button>
-                <button
-                  type="button"
-                  title="Move up"
-                  disabled={!view.canReorder || isFirstReorderable}
-                  onClick={() => onMoveView(view.id, 'up')}
-                  style={{ padding: '2px 6px', minWidth: 26 }}
-                >
-                  ↑
-                </button>
-                <button
-                  type="button"
-                  title="Move down"
-                  disabled={!view.canReorder || isLastReorderable}
-                  onClick={() => onMoveView(view.id, 'down')}
-                  style={{ padding: '2px 6px', minWidth: 26 }}
-                >
-                  ↓
-                </button>
-                <button
-                  type="button"
-                  title="Delete view"
-                  disabled={!view.canDelete}
-                  onClick={() => onDeleteView(view.id)}
-                  style={{ padding: '2px 6px', minWidth: 26 }}
-                >
-                  ×
-                </button>
-              </div>
+      <div className="section-card">
+        <div className="section-head">Blueprint</div>
+        <div style={{ padding: 8, display: 'grid', gap: 8 }}>
+          {views.map((view) => {
+            const reorderIndex = reorderableViewIds.indexOf(view.id)
+            const isFirstReorderable = reorderIndex <= 0
+            const isLastReorderable = reorderIndex < 0 || reorderIndex >= reorderableViewIds.length - 1
+            const hasSelectedChild = view.elementIds.includes(selectedId ?? '')
 
-              <div style={{ borderTop: '1px solid #1b2235', padding: '6px 6px 6px 16px', display: 'grid', gap: 6 }}>
-                {view.elementIds.map((elementId) => {
-                  const element = byId.get(elementId)
-                  if (!element) {
+            return (
+              <div key={view.id} className="view-item">
+                <div className="view-head">
+                  <input
+                    type="checkbox"
+                    checked={view.visible}
+                    title={view.visible ? 'Hide view' : 'Show view'}
+                    onChange={(e) => onToggleViewVisibility(view.id, e.target.checked)}
+                  />
+                  <button
+                    type="button"
+                    className={`view-btn${hasSelectedChild ? ' selected' : ''}`}
+                    onClick={() => onActivateView(view.id)}
+                    title={view.id}
+                  >
+                    <div className="view-title-line">
+                      <span className={`type-icon-wrap view-kind ${view.kind === '3d' ? 'kind-3d' : 'kind-2d'}`}>
+                        <MinimalIcon kind={view.kind === '3d' ? 'view3d' : 'view2d'} />
+                      </span>
+                      <div className="primary">{view.name}</div>
+                    </div>
+                  </button>
+                  <button
+                    className="icon-btn"
+                    type="button"
+                    title="Move up"
+                    disabled={!view.canReorder || isFirstReorderable}
+                    onClick={() => onMoveView(view.id, 'up')}
+                  >
+                    ↑
+                  </button>
+                  <button
+                    className="icon-btn"
+                    type="button"
+                    title="Move down"
+                    disabled={!view.canReorder || isLastReorderable}
+                    onClick={() => onMoveView(view.id, 'down')}
+                  >
+                    ↓
+                  </button>
+                  <button
+                    className="icon-btn"
+                    type="button"
+                    title="Delete view"
+                    disabled={!view.canDelete}
+                    onClick={() => onDeleteView(view.id)}
+                  >
+                    ×
+                  </button>
+                </div>
+
+                <div style={{ borderTop: '1px solid var(--line)', padding: '6px 6px 6px 14px', display: 'grid', gap: 4 }}>
+                  {view.elementIds.map((elementId) => {
+                    const element = byId.get(elementId)
+                    if (!element) {
+                      return (
+                        <div key={elementId} className="panel-subtitle">
+                          (missing element)
+                        </div>
+                      )
+                    }
+
+                    const selected = selectedId === element.id
+                    const isVisible = element.visible !== false
+
                     return (
-                      <div key={elementId} style={{ fontSize: 12, opacity: 0.6 }}>
-                        (missing element)
+                      <div key={element.id} className="item-row">
+                        <input
+                          type="checkbox"
+                          title={isVisible ? 'Hide element' : 'Show element'}
+                          checked={isVisible}
+                          onChange={(e) => onToggleVisibility(element.id, e.target.checked)}
+                        />
+                        <button
+                          className={`item-btn${selected ? ' selected' : ''}`}
+                          onClick={() => onSelect(element.id)}
+                          onDoubleClick={() => onFocus(element.id)}
+                          title={element.id}
+                        >
+                          <div className="item-title-line">
+                            <span className={`type-icon-wrap type-${element.type}`}>
+                              <MinimalIcon kind={iconKindForElement(element.type)} />
+                            </span>
+                            <div className="primary">{element.name}</div>
+                          </div>
+                        </button>
+                        <button className="icon-btn" onClick={() => onDelete(element.id)} title="Remove element">
+                          ×
+                        </button>
                       </div>
                     )
-                  }
-
-                  const selected = selectedId === element.id
-                  const isVisible = element.visible !== false
-                  const count = Number((element.summary as any)?.pointCount ?? (element.summary as any)?.count ?? 0)
-                  const unit = element.type === 'pointcloud' ? 'pts' : element.type === 'gaussians' ? 'splats' : ''
-                  const imageW = Number((element.summary as any)?.width ?? 0)
-                  const imageH = Number((element.summary as any)?.height ?? 0)
-
-                  return (
-                    <div key={element.id} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                      <input
-                        type="checkbox"
-                        title={isVisible ? 'Hide element' : 'Show element'}
-                        checked={isVisible}
-                        onChange={(e) => onToggleVisibility(element.id, e.target.checked)}
-                      />
-                      <button
-                        onClick={() => onSelect(element.id)}
-                        onDoubleClick={() => onFocus(element.id)}
-                        style={{
-                          flex: 1,
-                          textAlign: 'left',
-                          padding: '7px 8px',
-                          borderRadius: 6,
-                          border: '1px solid #1b2235',
-                          background: selected ? '#172242' : '#0f1630',
-                          color: '#e8ecff',
-                          cursor: 'pointer',
-                        }}
-                        title={element.id}
-                      >
-                        <div style={{ fontSize: 13, fontWeight: 600 }}>{element.name}</div>
-                        <div style={{ fontSize: 11, opacity: 0.55, textTransform: 'uppercase' }}>{element.type}</div>
-                        {element.type !== 'camera' && element.type !== 'image' && (
-                          <div style={{ fontSize: 12, opacity: 0.75 }}>{count.toLocaleString()} {unit}</div>
-                        )}
-                        {element.type === 'image' && (
-                          <div style={{ fontSize: 12, opacity: 0.75 }}>
-                            {imageW > 0 && imageH > 0 ? `${imageW}x${imageH}` : 'image'}
-                          </div>
-                        )}
-                      </button>
-                      <button
-                        onClick={() => onDelete(element.id)}
-                        title="Remove element"
-                        style={{ padding: '2px 6px', minWidth: 26 }}
-                      >
-                        ×
-                      </button>
-                    </div>
-                  )
-                })}
-                {view.elementIds.length === 0 && <div style={{ fontSize: 12, opacity: 0.6 }}>(no elements)</div>}
+                  })}
+                  {view.elementIds.length === 0 && <div className="panel-subtitle">(no elements)</div>}
+                </div>
               </div>
-            </div>
-          )
-        })}
+            )
+          })}
+          {views.length === 0 && <div className="panel-subtitle">(no views)</div>}
+        </div>
       </div>
 
-      {views.length === 0 && <div style={{ marginTop: 8, opacity: 0.75 }}>(no views)</div>}
-
-      <div style={{ marginTop: 14, fontSize: 12, opacity: 0.65 }}>Tip: Double-click an image element to activate its linked 2D view.</div>
+      <div className="panel-subtitle">Tip: Double-click an image element to activate its linked 2D view.</div>
     </div>
   )
 }

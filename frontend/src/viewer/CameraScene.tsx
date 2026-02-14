@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef } from 'react'
-import { useFrame, useThree } from '@react-three/fiber'
+import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 
 export const CAMERA_GIZMO_OVERLAY_LAYER = 1
+const CAMERA_GIZMO_WORLD_SCALE = 1.6
 
 export type CameraVisual = {
   id: string
@@ -30,9 +31,6 @@ function CameraGizmo({
   const cameraId = camera.id
   const groupRef = useRef<THREE.Group | null>(null)
   const lastLocalPoseRef = useRef<string | null>(null)
-  const { camera: viewCamera, size } = useThree()
-  const _camPos = useMemo(() => new THREE.Vector3(), [])
-  const _objPos = useMemo(() => new THREE.Vector3(), [])
   const frustumColor = selected ? '#9dd1ff' : '#8ec5f7'
 
   const frustumGeom = useMemo(() => {
@@ -95,6 +93,8 @@ function CameraGizmo({
     groupRef.current.traverse((obj) => {
       obj.layers.set(CAMERA_GIZMO_OVERLAY_LAYER)
     })
+    // Keep a stable world-space size so gizmos don't grow/shrink with viewport zoom.
+    groupRef.current.scale.setScalar(CAMERA_GIZMO_WORLD_SCALE)
   }, [])
 
   useFrame(() => {
@@ -109,25 +109,6 @@ function CameraGizmo({
         }
       }
     } catch {}
-
-    // Keep camera gizmo visible regardless of scene scale (editor-like behavior).
-    if (groupRef.current) {
-      viewCamera.getWorldPosition(_camPos)
-      groupRef.current.getWorldPosition(_objPos)
-      const distance = Math.max(0.001, _camPos.distanceTo(_objPos))
-
-      let worldPerPixel = 0.01
-      const maybePerspective = viewCamera as THREE.PerspectiveCamera
-      if ((maybePerspective as any).isPerspectiveCamera) {
-        const vFov = THREE.MathUtils.degToRad(maybePerspective.fov)
-        const worldHeight = 2 * Math.tan(vFov * 0.5) * distance
-        worldPerPixel = worldHeight / Math.max(1, size.height)
-      }
-
-      const desiredPx = 120
-      const scale = THREE.MathUtils.clamp(desiredPx * worldPerPixel, 1.2, 220)
-      groupRef.current.scale.setScalar(scale)
-    }
   })
 
   useEffect(() => {

@@ -497,140 +497,168 @@ export default function Inspector({
 
   if (!selected) {
     return (
-      <div style={{ padding: 12, borderLeft: '1px solid #1b2235', width: '100%', boxSizing: 'border-box' }}>
-        <strong>Inspector</strong>
-        <div style={{ marginTop: 8, opacity: 0.75 }}>Select an element.</div>
+      <div className="inspector-layout">
+        <h2 className="inspect-title">Inspector</h2>
+        <div className="inspect-card">
+          <div className="panel-subtitle">Select an element to inspect metadata and controls.</div>
+        </div>
       </div>
     )
   }
 
   return (
-    <div style={{ padding: 12, borderLeft: '1px solid #1b2235', width: '100%', boxSizing: 'border-box' }}>
-      <strong>Inspector</strong>
-      <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8 }}>id</div>
-      <div style={{ fontFamily: 'monospace', fontSize: 12, wordBreak: 'break-all' }}>{selected.id}</div>
+    <div className="inspector-layout">
+      <div>
+        <h2 className="inspect-title">Inspector</h2>
+        <div className="panel-subtitle">Element controls and metadata</div>
+      </div>
 
-      <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8 }}>type</div>
-      <div>{selected.type}</div>
+      <div className="inspect-card">
+        <div className="inspect-grid">
+          <div>
+            <div className="inspect-label">Name</div>
+            <div className="inspect-value">{selected.name}</div>
+          </div>
+          <div>
+            <div className="inspect-label">Type</div>
+            <div className="inspect-value">{selected.type}</div>
+          </div>
+        </div>
+        <div style={{ marginTop: 8 }}>
+          <div className="inspect-label">Id</div>
+          <div className="inspect-value inspect-mono">{selected.id}</div>
+        </div>
+      </div>
 
-      <div style={{ marginTop: 14, display: 'flex', gap: 8, alignItems: 'center' }}>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, opacity: 0.9 }}>
-          <input
-            type="checkbox"
-            checked={isVisible}
-            onChange={(e) => setVisibilityForElement(selected.id, e.target.checked)}
-          />
-          Visible
-        </label>
-        <button
-          onClick={() => onDelete(selected.id)}
-          style={{
-            padding: '6px 8px',
-            borderRadius: 6,
-            border: '1px solid #1b2235',
-            background: '#0f1630',
-            color: '#e8ecff',
-            cursor: 'pointer',
-            fontSize: 12,
-          }}
-        >
-          Remove
-        </button>
+      <div className="inspect-card">
+        <div className="pill-row" style={{ justifyContent: 'space-between' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+            <input type="checkbox" checked={isVisible} onChange={(e) => setVisibilityForElement(selected.id, e.target.checked)} />
+            Visible
+          </label>
+          <button className="toolbar-btn danger" onClick={() => onDelete(selected.id)}>
+            Remove
+          </button>
+        </div>
       </div>
 
       {isCamera && (
-        <div style={{ marginTop: 10 }}>
-          <div style={{ display: 'grid', gap: 6 }}>
-            <label style={{ fontSize: 12, opacity: 0.8 }}>Look at object</label>
-            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              <select
-                value={lookAtTargetId}
-                onChange={(e) => setLookAtTargetId(e.target.value)}
-                disabled={availableLookAtTargets.length === 0}
-                style={{ flex: 1, minWidth: 0 }}
-              >
-                {availableLookAtTargets.length === 0 && <option value="">(no available 3D objects)</option>}
-                {availableLookAtTargets.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name} ({t.type})
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                onClick={lookAtSelectedTarget}
-                disabled={!lookAtTargetId || availableLookAtTargets.length === 0}
-                style={{
-                  padding: '6px 8px',
-                  borderRadius: 6,
-                  border: '1px solid #1b2235',
-                  background: '#0f1630',
-                  color: '#e8ecff',
-                  cursor: 'pointer',
-                  fontSize: 12,
-                }}
-              >
-                Look At
-              </button>
-            </div>
+        <div className="inspect-card">
+          <div className="inspect-label">Look At Object</div>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <select
+              value={lookAtTargetId}
+              onChange={(e) => setLookAtTargetId(e.target.value)}
+              disabled={availableLookAtTargets.length === 0}
+              style={{ flex: 1, minWidth: 0 }}
+            >
+              {availableLookAtTargets.length === 0 && <option value="">(no available 3D objects)</option>}
+              {availableLookAtTargets.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name} ({t.type})
+                </option>
+              ))}
+            </select>
+            <button type="button" className="toolbar-btn" onClick={lookAtSelectedTarget} disabled={!lookAtTargetId || availableLookAtTargets.length === 0}>
+              Look At
+            </button>
           </div>
         </div>
       )}
 
-      <div style={{ marginTop: 14 }}>
-        <div style={{ fontSize: 12, opacity: 0.8 }}>Transform</div>
-        <div style={{ marginTop: 6, fontSize: 12, opacity: 0.7 }}>Position</div>
-        <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-          {[0, 1, 2].map((i) => (
-            <input
-              key={`pos-${i}`}
-              type="number"
-              step={0.001}
-              value={position ? round3(position[i]) : 0}
-              onMouseDown={startDragNumber(
-                i,
-                position ? round3(position[i]) : 0,
-                (idx, val) =>
-                  setPosition((prev) => {
-                    const next: [number, number, number] = prev ? [...prev] as any : [0, 0, 0]
-                    next[idx] = round3(val)
-                    return next
-                  }),
-                0.01,
-              )}
-              onChange={(e) => {
-                const v = round3(parseFloat(e.target.value))
-                manualPoseEditRef.current = true
-                setPosition((prev) => {
-                  const next: [number, number, number] = prev ? [...prev] as any : [0, 0, 0]
-                  next[i] = Number.isFinite(v) ? round3(v) : 0
-                  return next
-                })
-              }}
-              style={{ width: 80 }}
-            />
-          ))}
+      <div className="inspect-card">
+        <div className="inspect-label">Transform Mode</div>
+        <div className="pill-row">
+          <button className={`pill-btn${transformMode === 'translate' ? ' active' : ''}`} onClick={() => onTransformModeChange('translate')}>
+            Move
+          </button>
+          <button className={`pill-btn${transformMode === 'rotate' ? ' active' : ''}`} onClick={() => onTransformModeChange('rotate')}>
+            Rotate
+          </button>
+          {isCamera && (
+            <button className={`pill-btn${activeCameraId === selected.id ? ' active' : ''}`} onClick={() => onSetActiveCamera(activeCameraId === selected.id ? null : selected.id)}>
+              {activeCameraId === selected.id ? 'Stop View Sync' : 'Sync 3D View'}
+            </button>
+          )}
         </div>
-        <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>Rotation (deg)</div>
-        <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-          {[0, 1, 2].map((i) => (
-            <input
-              key={`rot-${i}`}
-              type="number"
-              step={0.001}
-              value={rotationEuler ? round3(rotationEuler[i]) : 0}
-              onMouseDown={startDragNumber(
-                i,
-                rotationEuler ? round3(rotationEuler[i]) : 0,
-                (idx, val) => {
+
+        <div style={{ marginTop: 10 }}>
+          <div className="inspect-label">Position</div>
+          <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+            {[0, 1, 2].map((i) => (
+              <input
+                key={`pos-${i}`}
+                type="number"
+                step={0.001}
+                value={position ? round3(position[i]) : 0}
+                onMouseDown={startDragNumber(
+                  i,
+                  position ? round3(position[i]) : 0,
+                  (idx, val) =>
+                    setPosition((prev) => {
+                      const next: [number, number, number] = prev ? ([...prev] as any) : [0, 0, 0]
+                      next[idx] = round3(val)
+                      return next
+                    }),
+                  0.01,
+                )}
+                onChange={(e) => {
+                  const v = round3(parseFloat(e.target.value))
                   manualPoseEditRef.current = true
-                  setRotationEuler((prev) => {
-                    const next: [number, number, number] = prev ? [...prev] as any : [0, 0, 0]
-                    next[idx] = round3(val)
+                  setPosition((prev) => {
+                    const next: [number, number, number] = prev ? ([...prev] as any) : [0, 0, 0]
+                    next[i] = Number.isFinite(v) ? round3(v) : 0
                     return next
                   })
-                  const nextEuler: [number, number, number] = rotationEuler ? [...rotationEuler] as any : [0, 0, 0]
-                  nextEuler[idx] = round3(val)
+                }}
+                style={{ width: 86 }}
+              />
+            ))}
+          </div>
+        </div>
+
+        <div style={{ marginTop: 8 }}>
+          <div className="inspect-label">Rotation (deg)</div>
+          <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+            {[0, 1, 2].map((i) => (
+              <input
+                key={`rot-${i}`}
+                type="number"
+                step={0.001}
+                value={rotationEuler ? round3(rotationEuler[i]) : 0}
+                onMouseDown={startDragNumber(
+                  i,
+                  rotationEuler ? round3(rotationEuler[i]) : 0,
+                  (idx, val) => {
+                    manualPoseEditRef.current = true
+                    setRotationEuler((prev) => {
+                      const next: [number, number, number] = prev ? ([...prev] as any) : [0, 0, 0]
+                      next[idx] = round3(val)
+                      return next
+                    })
+                    const nextEuler: [number, number, number] = rotationEuler ? ([...rotationEuler] as any) : [0, 0, 0]
+                    nextEuler[idx] = round3(val)
+                    const euler = new THREE.Euler(
+                      THREE.MathUtils.degToRad(nextEuler[0]),
+                      THREE.MathUtils.degToRad(nextEuler[1]),
+                      THREE.MathUtils.degToRad(nextEuler[2]),
+                      'XYZ',
+                    )
+                    const q = new THREE.Quaternion().setFromEuler(euler).normalize()
+                    setRotation([q.x, q.y, q.z, q.w])
+                  },
+                  0.1,
+                )}
+                onChange={(e) => {
+                  const v = round3(parseFloat(e.target.value))
+                  manualPoseEditRef.current = true
+                  setRotationEuler((prev) => {
+                    const next: [number, number, number] = prev ? ([...prev] as any) : [0, 0, 0]
+                    next[i] = Number.isFinite(v) ? round3(v) : 0
+                    return next
+                  })
+                  const nextEuler: [number, number, number] = rotationEuler ? ([...rotationEuler] as any) : [0, 0, 0]
+                  nextEuler[i] = Number.isFinite(v) ? round3(v) : 0
                   const euler = new THREE.Euler(
                     THREE.MathUtils.degToRad(nextEuler[0]),
                     THREE.MathUtils.degToRad(nextEuler[1]),
@@ -639,105 +667,72 @@ export default function Inspector({
                   )
                   const q = new THREE.Quaternion().setFromEuler(euler).normalize()
                   setRotation([q.x, q.y, q.z, q.w])
-                },
-                0.1,
-              )}
-              onChange={(e) => {
-                const v = round3(parseFloat(e.target.value))
-                manualPoseEditRef.current = true
-                setRotationEuler((prev) => {
-                  const next: [number, number, number] = prev ? [...prev] as any : [0, 0, 0]
-                  next[i] = Number.isFinite(v) ? round3(v) : 0
-                  return next
-                })
-                const nextEuler: [number, number, number] = rotationEuler ? [...rotationEuler] as any : [0, 0, 0]
-                nextEuler[i] = Number.isFinite(v) ? round3(v) : 0
-                const euler = new THREE.Euler(
-                  THREE.MathUtils.degToRad(nextEuler[0]),
-                  THREE.MathUtils.degToRad(nextEuler[1]),
-                  THREE.MathUtils.degToRad(nextEuler[2]),
-                  'XYZ',
-                )
-                const q = new THREE.Quaternion().setFromEuler(euler).normalize()
-                setRotation([q.x, q.y, q.z, q.w])
-              }}
-              style={{ width: 80 }}
-            />
-          ))}
+                }}
+                style={{ width: 86 }}
+              />
+            ))}
+          </div>
         </div>
       </div>
 
       {isCamera && (
-        <div style={{ marginTop: 14 }}>
-          <div style={{ fontSize: 12, opacity: 0.8 }}>Camera</div>
-          <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-            <label style={{ fontSize: 12, opacity: 0.7 }}>
+        <div className="inspect-card">
+          <div className="inspect-label">Camera</div>
+          <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+            <label style={{ fontSize: 12 }}>
               FOV
-              <input
-                type="number"
-                step={1}
-                value={fov ?? 60}
-                onChange={(e) => setFov(parseFloat(e.target.value))}
-                style={{ width: 80, marginLeft: 6 }}
-              />
+              <input type="number" step={1} value={fov ?? 60} onChange={(e) => setFov(parseFloat(e.target.value))} style={{ width: 86, marginLeft: 6 }} />
             </label>
-            <label style={{ fontSize: 12, opacity: 0.7 }}>
+            <label style={{ fontSize: 12 }}>
               Near
-              <input
-                type="number"
-                step={0.01}
-                value={near ?? 0.01}
-                onChange={(e) => setNear(parseFloat(e.target.value))}
-                style={{ width: 80, marginLeft: 6 }}
-              />
+              <input type="number" step={0.01} value={near ?? 0.01} onChange={(e) => setNear(parseFloat(e.target.value))} style={{ width: 86, marginLeft: 6 }} />
             </label>
-            <label style={{ fontSize: 12, opacity: 0.7 }}>
+            <label style={{ fontSize: 12 }}>
               Far
-              <input
-                type="number"
-                step={1}
-                value={far ?? 1000}
-                onChange={(e) => setFar(parseFloat(e.target.value))}
-                style={{ width: 80, marginLeft: 6 }}
-              />
+              <input type="number" step={1} value={far ?? 1000} onChange={(e) => setFar(parseFloat(e.target.value))} style={{ width: 86, marginLeft: 6 }} />
             </label>
           </div>
         </div>
       )}
 
-      <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8 }}>name</div>
-      <div>{selected.name}</div>
+      {(isPointCloud || isGaussians || isImage) && (
+        <div className="inspect-card">
+          {isPointCloud && selected.summary?.pointCount !== undefined && (
+            <div style={{ marginBottom: 6 }}>
+              <div className="inspect-label">Points</div>
+              <div className="inspect-value">{selected.summary.pointCount as number}</div>
+            </div>
+          )}
 
-      {isPointCloud && selected.summary?.pointCount !== undefined && (
-        <>
-          <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8 }}>points</div>
-          <div>{selected.summary.pointCount as number}</div>
-        </>
-      )}
+          {isGaussians && selected.summary?.count !== undefined && (
+            <div style={{ marginBottom: 6 }}>
+              <div className="inspect-label">Gaussians</div>
+              <div className="inspect-value">{selected.summary.count as number}</div>
+            </div>
+          )}
 
-      {isGaussians && selected.summary?.count !== undefined && (
-        <>
-          <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8 }}>gaussians</div>
-          <div>{selected.summary.count as number}</div>
-        </>
-      )}
-
-      {isImage && (
-        <>
-          <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8 }}>image</div>
-          <div>{imgWidth ?? '?'} x {imgHeight ?? '?'}</div>
-          <div style={{ marginTop: 6, fontSize: 12, opacity: 0.8 }}>channels</div>
-          <div>{imgChannels ?? '?'}</div>
-          <div style={{ marginTop: 6, fontSize: 12, opacity: 0.8 }}>mime</div>
-          <div style={{ fontFamily: 'monospace', fontSize: 12 }}>{imgMime ?? '?'}</div>
-        </>
+          {isImage && (
+            <>
+              <div className="inspect-label">Image</div>
+              <div className="inspect-value">
+                {imgWidth ?? '?'} x {imgHeight ?? '?'}
+              </div>
+              <div style={{ marginTop: 6 }} className="inspect-label">
+                Channels
+              </div>
+              <div className="inspect-value">{imgChannels ?? '?'}</div>
+              <div style={{ marginTop: 6 }} className="inspect-label">
+                Mime
+              </div>
+              <div className="inspect-value inspect-mono">{imgMime ?? '?'}</div>
+            </>
+          )}
+        </div>
       )}
 
       {isPointCloud && (
-        <div style={{ marginTop: 14 }}>
-          <label style={{ display: 'block', fontSize: 12, opacity: 0.9 }}>
-            {isPointCloud ? 'Point size' : 'Scaling'}
-          </label>
+        <div className="inspect-card">
+          <div className="inspect-label">{isPointCloud ? 'Point Size' : 'Scaling'}</div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 6 }}>
             <input
               type="range"
@@ -758,21 +753,25 @@ export default function Inspector({
               style={{ width: 90 }}
             />
           </div>
-          <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>{busy ? 'Updating…' : ' '}</div>
+          <div className="panel-subtitle" style={{ marginTop: 6 }}>
+            {busy ? 'Updating...' : ' '}
+          </div>
         </div>
       )}
 
       {(isPointCloud || isGaussians) && (
-        <div style={{ marginTop: 14 }}>
-          <label style={{ display: 'block', fontSize: 12, opacity: 0.9 }}>Color</label>
-
-          <div style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>Mode</div>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 6, flexWrap: 'wrap' }}>
+        <div className="inspect-card">
+          <div className="inspect-label">Color</div>
+          <div className="inspect-label" style={{ marginTop: 8 }}>
+            Mode
+          </div>
+          <div className="pill-row">
             {(['logged', 'solid', 'height', 'depth'] as ColorMode[]).map((v) => {
               const active = colorMode === v
               return (
                 <button
                   key={v}
+                  className={`pill-btn${active ? ' active' : ''}`}
                   onClick={() => {
                     setColorMode(v)
                     if (v === 'height') {
@@ -786,14 +785,6 @@ export default function Inspector({
                       return
                     }
                     setVisualOverrideForElement(selected.id, v, solidColor, colorMap)
-                  }}
-                  style={{
-                    padding: '6px 8px',
-                    borderRadius: 6,
-                    border: '1px solid rgba(255,255,255,0.06)',
-                    background: active ? 'rgba(255,255,255,0.06)' : 'transparent',
-                    color: '#e8ecff',
-                    cursor: 'pointer',
                   }}
                 >
                   {v}
@@ -813,13 +804,13 @@ export default function Inspector({
                   setVisualOverrideForElement(selected.id, 'solid', e.target.value, colorMap)
                 }}
               />
-              <div style={{ fontSize: 12, opacity: 0.8 }}>{solidColor}</div>
+              <div className="inspect-value">{solidColor}</div>
             </div>
           )}
 
           {(colorMode === 'height' || colorMode === 'depth') && (
             <div style={{ marginTop: 12 }}>
-              <label style={{ display: 'block', fontSize: 12, opacity: 0.85 }}>Colormap</label>
+              <label className="inspect-label">Colormap</label>
               <select
                 value={colorMap}
                 onChange={(e) => {
@@ -827,15 +818,7 @@ export default function Inspector({
                   setColorMap(next)
                   setVisualOverrideForElement(selected.id, colorMode, solidColor, next)
                 }}
-                style={{
-                  marginTop: 6,
-                  width: '100%',
-                  background: '#0f1630',
-                  color: '#e8ecff',
-                  border: '1px solid #1b2235',
-                  borderRadius: 6,
-                  padding: '6px 8px',
-                }}
+                style={{ marginTop: 6, width: '100%' }}
               >
                 {COLORMAPS.map((c) => (
                   <option key={c.id} value={c.id}>
@@ -848,43 +831,34 @@ export default function Inspector({
         </div>
       )}
 
-      {/* Client-side controls for gaussians */}
       {isGaussians && (
-        <div style={{ marginTop: 14 }}>
-          <label style={{ display: 'block', fontSize: 12, opacity: 0.9 }}>Client controls</label>
-
-          <div style={{ marginTop: 12 }}>
-            <div style={{ fontSize: 12, opacity: 0.8 }}>LOD override</div>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 6 }}>
-              {(['auto', 'high', 'medium', 'low'] as const).map((v) => {
-                const active = (v === 'auto' && !lodOverride) || (lodOverride === v)
-                return (
-                  <button
-                    key={v}
-                    onClick={() => {
-                      const val = v === 'auto' ? undefined : v
-                      setLodOverride(val)
-                      setLodOverrideForElement(selected.id, val as any)
-                    }}
-                    style={{
-                      padding: '6px 8px',
-                      borderRadius: 6,
-                      border: '1px solid rgba(255,255,255,0.06)',
-                      background: active ? 'rgba(255,255,255,0.06)' : 'transparent',
-                      color: '#e8ecff',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    {v}
-                  </button>
-                )
-              })}
-            </div>
+        <div className="inspect-card">
+          <div className="inspect-label">Client Controls</div>
+          <div className="inspect-label" style={{ marginTop: 10 }}>
+            LOD Override
+          </div>
+          <div className="pill-row">
+            {(['auto', 'high', 'medium', 'low'] as const).map((v) => {
+              const active = (v === 'auto' && !lodOverride) || lodOverride === v
+              return (
+                <button
+                  key={v}
+                  className={`pill-btn${active ? ' active' : ''}`}
+                  onClick={() => {
+                    const val = v === 'auto' ? undefined : v
+                    setLodOverride(val)
+                    setLodOverrideForElement(selected.id, val as any)
+                  }}
+                >
+                  {v}
+                </button>
+              )
+            })}
           </div>
         </div>
       )}
 
-      {err && <div style={{ marginTop: 10, color: 'crimson', fontSize: 12 }}>{err}</div>}
+      {err && <div className="error-text">{err}</div>}
     </div>
   )
 }

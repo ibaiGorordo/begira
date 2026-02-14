@@ -1,6 +1,6 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import 'flexlayout-react/style/dark.css'
+import 'flexlayout-react/style/light.css'
 import App from './App'
 import './styles.css'
 
