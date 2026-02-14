@@ -13,6 +13,8 @@ import uvicorn
 
 from .client import BegiraClient
 from .conventions import CoordinateConvention
+from .elements import CameraElement, GaussianSplatElement, PointCloudElement
+from .handles import CameraHandle, GaussianHandle, PointCloudHandle
 from .registry import REGISTRY
 from .server import create_app
 
@@ -35,6 +37,103 @@ class BegiraServer:
         """Set the viewer coordinate convention for this server."""
         self._as_client().set_coordinate_convention(convention, timeout_s=timeout_s)
 
+    @staticmethod
+    def _bounds_from_positions(pos: np.ndarray) -> dict[str, list[float]]:
+        if pos.size == 0:
+            return {"min": [0.0, 0.0, 0.0], "max": [0.0, 0.0, 0.0]}
+        bounds_min = pos.min(axis=0)
+        bounds_max = pos.max(axis=0)
+        return {"min": bounds_min.tolist(), "max": bounds_max.tolist()}
+
+    @staticmethod
+    def _bounds_from_position(pos: tuple[float, float, float], *, radius: float = 0.5) -> dict[str, list[float]]:
+        x, y, z = float(pos[0]), float(pos[1]), float(pos[2])
+        r = float(radius)
+        return {"min": [x - r, y - r, z - r], "max": [x + r, y + r, z + r]}
+
+    def get_element_meta(self, element_id: str, *, timeout_s: float = 10.0) -> dict:
+        _ = timeout_s
+        e = REGISTRY.get_element(element_id)
+        if e is None:
+            raise RuntimeError(f"Unknown element: {element_id}")
+        if isinstance(e, PointCloudElement):
+            return {
+                "id": e.id,
+                "type": e.type,
+                "name": e.name,
+                "revision": int(e.revision),
+                "bounds": self._bounds_from_positions(e.positions),
+                "pointCount": int(e.positions.shape[0]),
+                "pointSize": float(e.point_size),
+                "position": list(e.position),
+                "rotation": list(e.rotation),
+                "visible": bool(e.visible),
+                "deleted": bool(e.deleted),
+            }
+        if isinstance(e, GaussianSplatElement):
+            return {
+                "id": e.id,
+                "type": e.type,
+                "name": e.name,
+                "revision": int(e.revision),
+                "bounds": self._bounds_from_positions(e.positions),
+                "count": int(e.positions.shape[0]),
+                "pointSize": float(e.point_size),
+                "position": list(e.position),
+                "rotation": list(e.rotation),
+                "visible": bool(e.visible),
+                "deleted": bool(e.deleted),
+            }
+        if isinstance(e, CameraElement):
+            return {
+                "id": e.id,
+                "type": e.type,
+                "name": e.name,
+                "revision": int(e.revision),
+                "bounds": self._bounds_from_position(e.position),
+                "position": list(e.position),
+                "rotation": list(e.rotation),
+                "fov": float(e.fov),
+                "near": float(e.near),
+                "far": float(e.far),
+                "width": int(e.width) if e.width is not None else None,
+                "height": int(e.height) if e.height is not None else None,
+                "intrinsicMatrix": [list(row) for row in e.intrinsic_matrix] if e.intrinsic_matrix is not None else None,
+                "visible": bool(e.visible),
+                "deleted": bool(e.deleted),
+            }
+        raise RuntimeError(f"Unsupported element type: {e.type}")
+
+    def delete_element(self, element_id: str, *, timeout_s: float = 10.0) -> None:
+        _ = timeout_s
+        try:
+            REGISTRY.delete_element(element_id)
+        except KeyError as e:
+            raise RuntimeError(f"Unknown element: {element_id}") from e
+
+    def set_element_visibility(self, element_id: str, visible: bool, *, timeout_s: float = 10.0) -> None:
+        _ = timeout_s
+        try:
+            REGISTRY.update_element_meta(element_id, visible=bool(visible))
+        except KeyError as e:
+            raise RuntimeError(f"Unknown element: {element_id}") from e
+
+    def log_transform(
+        self,
+        element_id: str,
+        *,
+        position: tuple[float, float, float] | list[float] | None = None,
+        rotation: tuple[float, float, float, float] | list[float] | None = None,
+        timeout_s: float = 10.0,
+    ) -> None:
+        _ = timeout_s
+        pos_v = tuple(float(x) for x in position) if position is not None else None
+        rot_v = tuple(float(x) for x in rotation) if rotation is not None else None
+        try:
+            REGISTRY.update_element_meta(element_id, position=pos_v, rotation=rot_v)
+        except KeyError as e:
+            raise RuntimeError(f"Unknown element: {element_id}") from e
+
     def log_points(
         self,
         name: str,
@@ -43,7 +142,7 @@ class BegiraServer:
         *,
         element_id: str | None = None,
         point_size: float | None = 0.05,
-    ) -> str:
+    ) -> PointCloudHandle:
         """Log (add/update) a pointcloud element."""
 
         if colors is None and not isinstance(positions, np.ndarray):
@@ -60,7 +159,7 @@ class BegiraServer:
             point_size=point_size,
             element_id=element_id,
         )
-        return pc.id
+        return PointCloudHandle(pc.id, ops=self, element_type="pointcloud")
 
     def log_gaussians(
         self,
@@ -72,7 +171,7 @@ class BegiraServer:
         rotations: np.ndarray | None = None,
         *,
         element_id: str | None = None,
-    ) -> str:
+    ) -> GaussianHandle:
         """Log (add/update) a 3D Gaussian Splatting element."""
 
         # Convenience: allow passing a GaussianSplatData object directly.
@@ -124,7 +223,7 @@ class BegiraServer:
             rotations=rotations,
             element_id=element_id,
         )
-        return gs.id
+        return GaussianHandle(gs.id, ops=self, element_type="gaussians")
 
     def log_camera(
         self,
@@ -132,23 +231,29 @@ class BegiraServer:
         *,
         position: tuple[float, float, float] | list[float] = (0.0, 0.0, 0.0),
         rotation: tuple[float, float, float, float] | list[float] = (0.0, 0.0, 0.0, 1.0),
-        fov: float = 60.0,
-        near: float = 0.01,
-        far: float = 1000.0,
+        fov: float | None = None,
+        near: float | None = 0.01,
+        far: float | None = 1000.0,
+        width: int | None = None,
+        height: int | None = None,
+        intrinsic_matrix: np.ndarray | list[list[float]] | tuple[tuple[float, ...], ...] | None = None,
         element_id: str | None = None,
-    ) -> str:
+    ) -> CameraHandle:
         """Log (add/update) a camera element."""
 
         cam = REGISTRY.upsert_camera(
             name=name,
             position=(float(position[0]), float(position[1]), float(position[2])),
             rotation=(float(rotation[0]), float(rotation[1]), float(rotation[2]), float(rotation[3])),
-            fov=float(fov),
-            near=float(near),
-            far=float(far),
+            fov=float(fov) if fov is not None else None,
+            near=float(near) if near is not None else None,
+            far=float(far) if far is not None else None,
+            width=int(width) if width is not None else None,
+            height=int(height) if height is not None else None,
+            intrinsic_matrix=intrinsic_matrix,
             element_id=element_id,
         )
-        return cam.id
+        return CameraHandle(cam.id, ops=self, element_type="camera")
 
     def log_ply(
         self,
@@ -157,7 +262,7 @@ class BegiraServer:
         *,
         element_id: str | None = None,
         point_size: float | None = 0.05,
-    ) -> str:
+    ) -> PointCloudHandle:
         """Load a `.ply` file and log it as a pointcloud element."""
 
         from .ply import load_ply_pointcloud
@@ -177,7 +282,7 @@ class BegiraServer:
         path: str,
         *,
         element_id: str | None = None,
-    ) -> str:
+    ) -> GaussianHandle:
         """Load a `.ply` 3DGS file and log it as a gaussians element."""
 
         from .ply import load_ply_gaussians

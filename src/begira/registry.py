@@ -34,6 +34,38 @@ class InMemoryRegistry:
         idx = len([e for e in self._elements.values() if isinstance(e, PointCloudElement)]) % len(self._default_palette)
         return self._default_palette[idx]
 
+    @staticmethod
+    def _normalize_intrinsic_matrix(
+        intrinsic_matrix: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]
+        | list[list[float]]
+        | np.ndarray
+        | None,
+    ) -> tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]] | None:
+        if intrinsic_matrix is None:
+            return None
+        k = np.asarray(intrinsic_matrix, dtype=np.float64)
+        if k.shape != (3, 3):
+            raise ValueError(f"intrinsic_matrix must have shape (3, 3), got {k.shape}")
+        return (
+            (float(k[0, 0]), float(k[0, 1]), float(k[0, 2])),
+            (float(k[1, 0]), float(k[1, 1]), float(k[1, 2])),
+            (float(k[2, 0]), float(k[2, 1]), float(k[2, 2])),
+        )
+
+    @staticmethod
+    def _infer_fov_from_intrinsics(
+        intrinsic_matrix: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]] | None,
+        height: int | None,
+    ) -> float | None:
+        if intrinsic_matrix is None or height is None:
+            return None
+        fy = float(intrinsic_matrix[1][1])
+        if not np.isfinite(fy) or fy <= 0:
+            raise ValueError("intrinsic_matrix[1][1] (fy) must be finite and > 0")
+        if int(height) <= 0:
+            raise ValueError("height must be a positive integer")
+        return float(np.degrees(2.0 * np.arctan(float(height) / (2.0 * fy))))
+
     def global_revision(self) -> int:
         with self._lock:
             return self._global_revision
@@ -87,6 +119,12 @@ class InMemoryRegistry:
         fov: float | None = None,
         near: float | None = None,
         far: float | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        intrinsic_matrix: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]
+        | list[list[float]]
+        | np.ndarray
+        | None = None,
     ) -> ElementBase:
         with self._lock:
             prev = self._elements.get(element_id)
@@ -120,9 +158,29 @@ class InMemoryRegistry:
                     updates["near"] = float(near)
                 if far is not None:
                     updates["far"] = float(far)
+                if width is not None:
+                    width_i = int(width)
+                    if width_i <= 0:
+                        raise ValueError("width must be a positive integer")
+                    updates["width"] = width_i
+                if height is not None:
+                    height_i = int(height)
+                    if height_i <= 0:
+                        raise ValueError("height must be a positive integer")
+                    updates["height"] = height_i
+                if intrinsic_matrix is not None:
+                    updates["intrinsic_matrix"] = self._normalize_intrinsic_matrix(intrinsic_matrix)
 
             if not updates:
                 return prev
+
+            if isinstance(prev, CameraElement):
+                next_near = float(updates.get("near", prev.near))
+                next_far = float(updates.get("far", prev.far))
+                if not np.isfinite(next_near) or next_near <= 0:
+                    raise ValueError("near must be a finite positive number")
+                if not np.isfinite(next_far) or next_far <= next_near:
+                    raise ValueError("far must be finite and greater than near")
 
             self._global_revision += 1
             now = time.time()
@@ -291,11 +349,19 @@ class InMemoryRegistry:
         name: str,
         position: tuple[float, float, float] = (0.0, 0.0, 0.0),
         rotation: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
-        fov: float = 60.0,
-        near: float = 0.01,
-        far: float = 1000.0,
+        fov: float | None = None,
+        near: float | None = None,
+        far: float | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        intrinsic_matrix: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]
+        | list[list[float]]
+        | np.ndarray
+        | None = None,
         element_id: str | None = None,
     ) -> CameraElement:
+        k = self._normalize_intrinsic_matrix(intrinsic_matrix)
+
         with self._lock:
             if element_id is None:
                 element_id = uuid.uuid4().hex
@@ -305,14 +371,40 @@ class InMemoryRegistry:
             prev = self._elements.get(element_id)
             prev_cam = prev if isinstance(prev, CameraElement) else None
 
+            width_v = int(width) if width is not None else (prev_cam.width if prev_cam is not None else None)
+            if width_v is not None and width_v <= 0:
+                raise ValueError("width must be a positive integer")
+
+            height_v = int(height) if height is not None else (prev_cam.height if prev_cam is not None else None)
+            if height_v is not None and height_v <= 0:
+                raise ValueError("height must be a positive integer")
+
+            k_v = k if k is not None else (prev_cam.intrinsic_matrix if prev_cam is not None else None)
+
+            if fov is None:
+                inferred_fov = self._infer_fov_from_intrinsics(k_v, height_v)
+                fov_v = float(inferred_fov) if inferred_fov is not None else (prev_cam.fov if prev_cam is not None else 60.0)
+            else:
+                fov_v = float(fov)
+
+            near_v = float(near) if near is not None else (prev_cam.near if prev_cam is not None else 0.01)
+            far_v = float(far) if far is not None else (prev_cam.far if prev_cam is not None else 1000.0)
+            if not np.isfinite(near_v) or near_v <= 0:
+                raise ValueError("near must be a finite positive number")
+            if not np.isfinite(far_v) or far_v <= near_v:
+                raise ValueError("far must be finite and greater than near")
+
             if prev_cam is None:
                 cam = CameraElement(
                     id=element_id,
                     type="camera",
                     name=name,
-                    fov=float(fov),
-                    near=float(near),
-                    far=float(far),
+                    fov=fov_v,
+                    near=near_v,
+                    far=far_v,
+                    width=width_v,
+                    height=height_v,
+                    intrinsic_matrix=k_v,
                     revision=1,
                     created_at=now,
                     updated_at=now,
@@ -326,9 +418,12 @@ class InMemoryRegistry:
                     id=prev_cam.id,
                     type="camera",
                     name=name,
-                    fov=float(fov),
-                    near=float(near),
-                    far=float(far),
+                    fov=fov_v,
+                    near=near_v,
+                    far=far_v,
+                    width=width_v,
+                    height=height_v,
+                    intrinsic_matrix=k_v,
                     revision=prev_cam.revision + 1,
                     created_at=prev_cam.created_at,
                     updated_at=now,

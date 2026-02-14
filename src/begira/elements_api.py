@@ -50,6 +50,7 @@ def mount_elements_api(app: FastAPI) -> None:
                         "bounds": _bounds_from_positions(e.positions),
                         "summary": {"pointCount": int(e.positions.shape[0])},
                         "visible": bool(e.visible),
+                        "deleted": bool(e.deleted),
                     }
                 )
             elif isinstance(e, GaussianSplatElement):
@@ -63,6 +64,7 @@ def mount_elements_api(app: FastAPI) -> None:
                         "bounds": _bounds_from_positions(e.positions),
                         "summary": {"count": int(e.positions.shape[0])},
                         "visible": bool(e.visible),
+                        "deleted": bool(e.deleted),
                     }
                 )
             elif isinstance(e, CameraElement):
@@ -77,9 +79,13 @@ def mount_elements_api(app: FastAPI) -> None:
                         "fov": float(e.fov),
                         "near": float(e.near),
                         "far": float(e.far),
+                        "width": int(e.width) if e.width is not None else None,
+                        "height": int(e.height) if e.height is not None else None,
+                        "intrinsicMatrix": [list(row) for row in e.intrinsic_matrix] if e.intrinsic_matrix is not None else None,
                         "position": list(e.position),
                         "rotation": list(e.rotation),
                         "visible": bool(e.visible),
+                        "deleted": bool(e.deleted),
                     }
                 )
             else:
@@ -119,6 +125,7 @@ def mount_elements_api(app: FastAPI) -> None:
                 "position": list(e.position),
                 "rotation": list(e.rotation),
                 "visible": bool(e.visible),
+                "deleted": bool(e.deleted),
                 "schema": schema,
                 "payloads": {
                     "points": {
@@ -148,6 +155,7 @@ def mount_elements_api(app: FastAPI) -> None:
                 "position": list(e.position),
                 "rotation": list(e.rotation),
                 "visible": bool(e.visible),
+                "deleted": bool(e.deleted),
                 "bytesPerGaussian": 14 * 4,
                 "schema": schema,
                 "payloads": {
@@ -167,9 +175,13 @@ def mount_elements_api(app: FastAPI) -> None:
                 "fov": float(e.fov),
                 "near": float(e.near),
                 "far": float(e.far),
+                "width": int(e.width) if e.width is not None else None,
+                "height": int(e.height) if e.height is not None else None,
+                "intrinsicMatrix": [list(row) for row in e.intrinsic_matrix] if e.intrinsic_matrix is not None else None,
                 "position": list(e.position),
                 "rotation": list(e.rotation),
                 "visible": bool(e.visible),
+                "deleted": bool(e.deleted),
             }
 
         raise HTTPException(status_code=400, detail=f"Unsupported element type: {e.type}")
@@ -433,24 +445,41 @@ def mount_elements_api(app: FastAPI) -> None:
         position = _as_vec("position", 3, [0.0, 0.0, 0.0])
         rotation = _as_vec("rotation", 4, [0.0, 0.0, 0.0, 1.0])
 
-        fov = float(body.get("fov", 60.0))
-        near = float(body.get("near", 0.01))
-        far = float(body.get("far", 1000.0))
+        try:
+            fov_raw = body.get("fov", None)
+            fov = float(fov_raw) if fov_raw is not None else None
+            near_raw = body.get("near", 0.01)
+            far_raw = body.get("far", 1000.0)
+            near = float(near_raw) if near_raw is not None else None
+            far = float(far_raw) if far_raw is not None else None
+            width_raw = body.get("width", None)
+            height_raw = body.get("height", None)
+            width = int(width_raw) if width_raw is not None else None
+            height = int(height_raw) if height_raw is not None else None
+            intrinsic_matrix = body.get("intrinsicMatrix", body.get("intrinsic_matrix", None))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Invalid camera intrinsics/projection fields")
 
         element_id = body.get("elementId")
         if element_id is not None:
             element_id = str(element_id).strip() or None
 
-        cam = REGISTRY.upsert_camera(
-            name=name,
-            position=position,
-            rotation=rotation,
-            fov=fov,
-            near=near,
-            far=far,
-            element_id=element_id,
-        )
-        return {"ok": True, "id": cam.id, "type": cam.type, "revision": int(cam.revision)}
+        try:
+            cam = REGISTRY.upsert_camera(
+                name=name,
+                position=position,
+                rotation=rotation,
+                fov=fov,
+                near=near,
+                far=far,
+                width=width,
+                height=height,
+                intrinsic_matrix=intrinsic_matrix,
+                element_id=element_id,
+            )
+            return {"ok": True, "id": cam.id, "type": cam.type, "revision": int(cam.revision)}
+        except (TypeError, ValueError) as ex:
+            raise HTTPException(status_code=400, detail=str(ex))
 
     @app.patch("/api/elements/{element_id}/meta")
     def patch_element_meta(element_id: str, body: dict) -> dict[str, Any]:
@@ -481,6 +510,13 @@ def mount_elements_api(app: FastAPI) -> None:
             fov = body.get("fov") if "fov" in body else None
             near = body.get("near") if "near" in body else None
             far = body.get("far") if "far" in body else None
+            width = body.get("width") if "width" in body else None
+            height = body.get("height") if "height" in body else None
+            intrinsic_matrix = None
+            if "intrinsicMatrix" in body:
+                intrinsic_matrix = body.get("intrinsicMatrix")
+            elif "intrinsic_matrix" in body:
+                intrinsic_matrix = body.get("intrinsic_matrix")
 
             updated = REGISTRY.update_element_meta(
                 element_id,
@@ -492,6 +528,9 @@ def mount_elements_api(app: FastAPI) -> None:
                 fov=float(fov) if fov is not None else None,
                 near=float(near) if near is not None else None,
                 far=float(far) if far is not None else None,
+                width=int(width) if width is not None else None,
+                height=int(height) if height is not None else None,
+                intrinsic_matrix=intrinsic_matrix,
             )
             return {"ok": True, "id": updated.id, "type": updated.type, "revision": int(updated.revision)}
         except (TypeError, ValueError) as ex:

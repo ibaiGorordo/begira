@@ -71,3 +71,6 @@ class CameraElement(ElementBase):
     fov: float
     near: float
     far: float
+    width: int | None = None
+    height: int | None = None
+    intrinsic_matrix: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]] | None = None

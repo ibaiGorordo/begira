@@ -95,12 +95,24 @@ import begira
 
 viewer = begira.run(port=8000)
 
-cam_id = viewer.log_camera(
+points = viewer.log_points("points", positions, colors)
+camera = viewer.log_camera(
     "main_camera",
     position=(2.0, 1.5, 3.0),
-    rotation=(0.0, 0.0, 0.0, 1.0),  # quaternion x,y,z,w
     fov=60.0,
     near=0.01,
     far=1000.0,
 )
+
+camera.look_at(points, 1.0)  # place camera 1m from target
+points.disable()   # hide
+points.enable()    # show
+points.delete()    # soft-delete
+
+# live metadata-backed properties
+print(points.name, points.position, points.orientation)
+print(points.rotation_matrix)
+print(points.count)         # pointcloud/gaussians
+print(points.kind, points.visible, points.deleted, points.bounds)
+print(camera.fov, camera.near, camera.far)
 ```
