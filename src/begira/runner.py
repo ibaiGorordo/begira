@@ -126,6 +126,30 @@ class BegiraServer:
         )
         return gs.id
 
+    def log_camera(
+        self,
+        name: str,
+        *,
+        position: tuple[float, float, float] | list[float] = (0.0, 0.0, 0.0),
+        rotation: tuple[float, float, float, float] | list[float] = (0.0, 0.0, 0.0, 1.0),
+        fov: float = 60.0,
+        near: float = 0.01,
+        far: float = 1000.0,
+        element_id: str | None = None,
+    ) -> str:
+        """Log (add/update) a camera element."""
+
+        cam = REGISTRY.upsert_camera(
+            name=name,
+            position=(float(position[0]), float(position[1]), float(position[2])),
+            rotation=(float(rotation[0]), float(rotation[1]), float(rotation[2]), float(rotation[3])),
+            fov=float(fov),
+            near=float(near),
+            far=float(far),
+            element_id=element_id,
+        )
+        return cam.id
+
     def log_ply(
         self,
         name: str,

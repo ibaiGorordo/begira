@@ -19,6 +19,15 @@ def _bounds_from_positions(pos: np.ndarray) -> dict[str, list[float]]:
     return {"min": bounds_min.tolist(), "max": bounds_max.tolist()}
 
 
+def _bounds_from_position(pos: tuple[float, float, float], *, radius: float = 0.5) -> dict[str, list[float]]:
+    x, y, z = float(pos[0]), float(pos[1]), float(pos[2])
+    r = float(radius)
+    return {
+        "min": [x - r, y - r, z - r],
+        "max": [x + r, y + r, z + r],
+    }
+
+
 def mount_elements_api(app: FastAPI) -> None:
     """Mount generic element endpoints.
 
@@ -64,6 +73,12 @@ def mount_elements_api(app: FastAPI) -> None:
                         "name": e.name,
                         "revision": int(e.revision),
                         "createdAt": float(e.created_at),
+                        "bounds": _bounds_from_position(e.position),
+                        "fov": float(e.fov),
+                        "near": float(e.near),
+                        "far": float(e.far),
+                        "position": list(e.position),
+                        "rotation": list(e.rotation),
                         "visible": bool(e.visible),
                     }
                 )

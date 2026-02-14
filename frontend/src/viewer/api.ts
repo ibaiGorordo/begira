@@ -9,6 +9,12 @@ export type ElementInfo = {
   bounds?: { min: [number, number, number]; max: [number, number, number] }
   summary?: Record<string, unknown>
   visible?: boolean
+  // Camera-only fields returned from /api/elements.
+  fov?: number
+  near?: number
+  far?: number
+  position?: [number, number, number]
+  rotation?: [number, number, number, number]
 }
 
 export type PointCloudElementMeta = {

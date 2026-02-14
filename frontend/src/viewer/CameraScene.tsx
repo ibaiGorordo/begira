@@ -1,42 +1,101 @@
-import { useEffect, useRef, useState } from 'react'
-import { useFrame } from '@react-three/fiber'
+import { useEffect, useMemo, useRef } from 'react'
+import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
-import { useCamera } from './useCamera'
+
+export const CAMERA_GIZMO_OVERLAY_LAYER = 1
+
+export type CameraVisual = {
+  id: string
+  position?: [number, number, number]
+  rotation?: [number, number, number, number]
+  fov?: number
+  near?: number
+  far?: number
+  visible?: boolean
+}
 
 function CameraGizmo({
-  cameraId,
+  camera,
   selected,
   onSelect,
   onFocus,
   onRegisterObject,
 }: {
-  cameraId: string
+  camera: CameraVisual
   selected: boolean
   onSelect: (id: string | null) => void
   onFocus: (id: string) => void
   onRegisterObject?: (id: string, obj: THREE.Object3D | null) => void
 }) {
-  const state = useCamera(cameraId)
-  const meta = state.status === 'ready' ? state.meta : null
+  const cameraId = camera.id
   const groupRef = useRef<THREE.Group | null>(null)
-  const camRef = useRef<THREE.PerspectiveCamera | null>(null)
-  const helperRef = useRef<THREE.CameraHelper | null>(null)
   const lastLocalPoseRef = useRef<string | null>(null)
+  const { camera: viewCamera, size } = useThree()
+  const _camPos = useMemo(() => new THREE.Vector3(), [])
+  const _objPos = useMemo(() => new THREE.Vector3(), [])
+  const frustumColor = selected ? '#9dd1ff' : '#8ec5f7'
+
+  const frustumGeom = useMemo(() => {
+    const fovDeg = Math.min(175.0, Math.max(5.0, camera.fov ?? 60.0))
+    const aspect = 16 / 9
+    const depth = 0.55
+    const halfY = Math.tan(THREE.MathUtils.degToRad(fovDeg * 0.5)) * depth
+    const halfX = halfY * aspect
+
+    const o = new THREE.Vector3(0, 0, 0)
+    const tl = new THREE.Vector3(-halfX, halfY, -depth)
+    const tr = new THREE.Vector3(halfX, halfY, -depth)
+    const br = new THREE.Vector3(halfX, -halfY, -depth)
+    const bl = new THREE.Vector3(-halfX, -halfY, -depth)
+    const topTip = new THREE.Vector3(0, halfY * 1.35, -depth)
+
+    const segments = [
+      o, tl,
+      o, tr,
+      o, br,
+      o, bl,
+      tl, tr,
+      tr, br,
+      br, bl,
+      bl, tl,
+      tl, topTip,
+      tr, topTip,
+    ]
+
+    const out = new Float32Array(segments.length * 3)
+    for (let i = 0; i < segments.length; i++) {
+      out[i * 3 + 0] = segments[i].x
+      out[i * 3 + 1] = segments[i].y
+      out[i * 3 + 2] = segments[i].z
+    }
+
+    const g = new THREE.BufferGeometry()
+    g.setAttribute('position', new THREE.BufferAttribute(out, 3))
+    return g
+  }, [camera.fov])
 
   useEffect(() => {
     if (!onRegisterObject) return
+    if (!groupRef.current) return
     onRegisterObject(cameraId, groupRef.current)
     return () => onRegisterObject(cameraId, null)
   }, [cameraId, onRegisterObject])
 
   useEffect(() => {
-    if (!meta || !groupRef.current) return
+    if (!groupRef.current) return
     if ((window as any).__begira_local_pose?.[cameraId]) return
-    const pos = meta.position ?? [0, 0, 0]
-    const rot = meta.rotation ?? [0, 0, 0, 1]
+    const pos = camera.position ?? [0, 0, 0]
+    const rot = camera.rotation ?? [0, 0, 0, 1]
     groupRef.current.position.set(pos[0], pos[1], pos[2])
     groupRef.current.quaternion.set(rot[0], rot[1], rot[2], rot[3]).normalize()
-  }, [meta])
+  }, [camera.position, camera.rotation, cameraId])
+
+  useEffect(() => {
+    if (!groupRef.current) return
+    groupRef.current.traverse((obj) => {
+      obj.layers.set(CAMERA_GIZMO_OVERLAY_LAYER)
+    })
+  }, [])
 
   useFrame(() => {
     try {
@@ -50,58 +109,70 @@ function CameraGizmo({
         }
       }
     } catch {}
+
+    // Keep camera gizmo visible regardless of scene scale (editor-like behavior).
+    if (groupRef.current) {
+      viewCamera.getWorldPosition(_camPos)
+      groupRef.current.getWorldPosition(_objPos)
+      const distance = Math.max(0.001, _camPos.distanceTo(_objPos))
+
+      let worldPerPixel = 0.01
+      const maybePerspective = viewCamera as THREE.PerspectiveCamera
+      if ((maybePerspective as any).isPerspectiveCamera) {
+        const vFov = THREE.MathUtils.degToRad(maybePerspective.fov)
+        const worldHeight = 2 * Math.tan(vFov * 0.5) * distance
+        worldPerPixel = worldHeight / Math.max(1, size.height)
+      }
+
+      const desiredPx = 120
+      const scale = THREE.MathUtils.clamp(desiredPx * worldPerPixel, 1.2, 220)
+      groupRef.current.scale.setScalar(scale)
+    }
   })
 
   useEffect(() => {
-    if (!camRef.current || !meta) return
-    camRef.current.fov = meta.fov
-    camRef.current.near = meta.near
-    camRef.current.far = meta.far
-    camRef.current.updateProjectionMatrix()
-    if (helperRef.current) helperRef.current.update()
-  }, [meta])
-
-  const [helper, setHelper] = useState<THREE.CameraHelper | null>(null)
-
-  useEffect(() => {
-    if (!camRef.current) return
-    const h = new THREE.CameraHelper(camRef.current)
-    helperRef.current = h
-    setHelper(h)
     return () => {
-      try {
-        h.dispose()
-      } catch {}
+      frustumGeom.dispose()
     }
-  }, [])
+  }, [frustumGeom])
 
-  if (!meta) return null
-  if (meta.visible === false) return null
+  if (camera.visible === false) {
+    return null
+  }
 
   return (
     <group
       ref={groupRef}
+      renderOrder={1000000}
+      frustumCulled={false}
       onClick={(e) => {
         e.stopPropagation()
         onSelect(cameraId)
         if (e.detail === 2) onFocus(cameraId)
       }}
     >
-      <perspectiveCamera ref={camRef} />
-      {helper && <primitive object={helper} />}
-      {selected && <axesHelper args={[0.5]} />}
+      <lineSegments geometry={frustumGeom} frustumCulled={false} renderOrder={1000000}>
+        <lineBasicMaterial
+          color={frustumColor}
+          depthTest={false}
+          depthWrite={false}
+          transparent
+          opacity={1}
+          toneMapped={false}
+        />
+      </lineSegments>
     </group>
   )
 }
 
 export default function CameraScene({
-  cameraIds,
+  cameras,
   selectedId,
   onSelect,
   onFocus,
   onRegisterObject,
 }: {
-  cameraIds: string[]
+  cameras: CameraVisual[]
   selectedId: string | null
   onSelect: (id: string | null) => void
   onFocus: (id: string) => void
@@ -109,11 +180,11 @@ export default function CameraScene({
 }) {
   return (
     <>
-      {cameraIds.map((id) => (
+      {cameras.map((camera) => (
         <CameraGizmo
-          key={id}
-          cameraId={id}
-          selected={id === selectedId}
+          key={camera.id}
+          camera={camera}
+          selected={camera.id === selectedId}
           onSelect={onSelect}
           onFocus={onFocus}
           onRegisterObject={onRegisterObject}

@@ -87,3 +87,20 @@ python -m build
 Pointcloud payload format:
 - XYZ: 3×float32 little‑endian
 - optional RGB: 3×uint8
+
+## Log A Camera From Python
+
+```python
+import begira
+
+viewer = begira.run(port=8000)
+
+cam_id = viewer.log_camera(
+    "main_camera",
+    position=(2.0, 1.5, 3.0),
+    rotation=(0.0, 0.0, 0.0, 1.0),  # quaternion x,y,z,w
+    fov=60.0,
+    near=0.01,
+    far=1000.0,
+)
+```

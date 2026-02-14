@@ -466,6 +466,15 @@ export default function App() {
             cloudIds={pointclouds.map((c) => c.id)}
             gaussianIds={gaussians.map((c) => c.id)}
             cameraIds={cameras.map((c) => c.id)}
+            cameraVisuals={cameras.map((c) => ({
+              id: c.id,
+              position: c.position,
+              rotation: c.rotation,
+              fov: c.fov,
+              near: c.near,
+              far: c.far,
+              visible: c.visible,
+            }))}
             selectedId={selectedId}
             onSelect={setSelectedId}
             focusTarget={focusTarget}
@@ -477,6 +486,7 @@ export default function App() {
             }}
             cloudMetaBounds={pointclouds.map((c) => c.bounds).filter(Boolean) as any}
             gaussianMetaBounds={gaussians.map((c) => c.bounds).filter(Boolean) as any}
+            cameraMetaBounds={cameras.map((c) => c.bounds).filter(Boolean) as any}
             activeCameraId={activeCameraId}
             transformMode={transformMode}
             onTransformCommit={(id, position, rotation) => void onTransformCommit(id, position, rotation)}

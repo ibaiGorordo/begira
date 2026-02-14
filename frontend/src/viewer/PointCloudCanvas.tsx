@@ -5,7 +5,7 @@ import * as THREE from 'three'
 import WASDControls from './WASDControls'
 import MultiPointCloudScene, { PointCloudRenderMode } from './MultiPointCloudScene'
 import GaussianSplatScene from './GaussianSplatScene'
-import CameraScene from './CameraScene'
+import CameraScene, { CAMERA_GIZMO_OVERLAY_LAYER, type CameraVisual } from './CameraScene'
 import { useCamera } from './useCamera'
 import {
   createClickGesture,
@@ -142,24 +142,103 @@ function FrameCamera({
 function ActiveCameraDriver({
   meta,
   enabled,
+  worldToView,
 }: {
   meta: { position?: [number, number, number]; rotation?: [number, number, number, number]; fov: number; near: number; far: number } | null
   enabled: boolean
+  worldToView: THREE.Quaternion
 }) {
   const { camera } = useThree()
+  const savedState = useRef<{
+    position: THREE.Vector3
+    quaternion: THREE.Quaternion
+    fov: number
+    near: number
+    far: number
+    target: THREE.Vector3 | null
+  } | null>(null)
+  const wasEnabled = useRef(false)
+
+  const restoreIfNeeded = useCallback(() => {
+    const prev = savedState.current
+    if (!prev) return
+    const cam = camera as THREE.PerspectiveCamera
+    cam.position.copy(prev.position)
+    cam.quaternion.copy(prev.quaternion)
+    cam.fov = prev.fov
+    cam.near = prev.near
+    cam.far = prev.far
+    cam.updateProjectionMatrix()
+
+    const anyCam = camera as unknown as { controls?: { target: THREE.Vector3; update: () => void } }
+    if (anyCam.controls && prev.target) {
+      anyCam.controls.target.copy(prev.target)
+      anyCam.controls.update()
+    }
+
+    savedState.current = null
+  }, [camera])
+
+  useLayoutEffect(() => {
+    const shouldDrive = enabled && !!meta
+    const cam = camera as THREE.PerspectiveCamera
+    const anyCam = camera as unknown as { controls?: { target: THREE.Vector3; update: () => void } }
+
+    if (shouldDrive && !savedState.current) {
+      const target = anyCam.controls ? anyCam.controls.target.clone() : null
+      savedState.current = {
+        position: cam.position.clone(),
+        quaternion: cam.quaternion.clone(),
+        fov: cam.fov,
+        near: cam.near,
+        far: cam.far,
+        target,
+      }
+    } else if (!shouldDrive && wasEnabled.current) {
+      restoreIfNeeded()
+    }
+    wasEnabled.current = shouldDrive
+
+    if (!shouldDrive || !meta) return
+    const posWorld = meta.position ?? [0, 0, 0]
+    const rotWorld = meta.rotation ?? [0, 0, 0, 1]
+
+    // Camera metadata is authored in world coordinates; scene is rendered in view coordinates.
+    const posView = new THREE.Vector3(posWorld[0], posWorld[1], posWorld[2]).applyQuaternion(worldToView)
+    const qWorld = new THREE.Quaternion(rotWorld[0], rotWorld[1], rotWorld[2], rotWorld[3]).normalize()
+    const qView = worldToView.clone().multiply(qWorld).normalize()
+
+    cam.position.copy(posView)
+    cam.quaternion.copy(qView)
+    cam.fov = THREE.MathUtils.clamp(Number.isFinite(meta.fov) ? meta.fov : 60, 5, 175)
+    cam.near = Math.max(0.0001, Number.isFinite(meta.near) ? meta.near : 0.01)
+    cam.far = Math.max(cam.near + 0.01, Number.isFinite(meta.far) ? meta.far : 1000)
+    cam.updateProjectionMatrix()
+  }, [camera, enabled, meta, worldToView])
+
+  // Re-apply every frame while active so no other control path can override
+  // camera pose/projection (e.g. damping controls).
+  useFrame(() => {
+    if (!enabled || !meta) return
+    const posWorld = meta.position ?? [0, 0, 0]
+    const rotWorld = meta.rotation ?? [0, 0, 0, 1]
+
+    const posView = new THREE.Vector3(posWorld[0], posWorld[1], posWorld[2]).applyQuaternion(worldToView)
+    const qWorld = new THREE.Quaternion(rotWorld[0], rotWorld[1], rotWorld[2], rotWorld[3]).normalize()
+    const qView = worldToView.clone().multiply(qWorld).normalize()
+
+    const cam = camera as THREE.PerspectiveCamera
+    cam.position.copy(posView)
+    cam.quaternion.copy(qView)
+    cam.fov = THREE.MathUtils.clamp(Number.isFinite(meta.fov) ? meta.fov : 60, 5, 175)
+    cam.near = Math.max(0.0001, Number.isFinite(meta.near) ? meta.near : 0.01)
+    cam.far = Math.max(cam.near + 0.01, Number.isFinite(meta.far) ? meta.far : 1000)
+    cam.updateProjectionMatrix()
+  })
 
   useEffect(() => {
-    if (!enabled || !meta) return
-    const pos = meta.position ?? [0, 0, 0]
-    const rot = meta.rotation ?? [0, 0, 0, 1]
-    camera.position.set(pos[0], pos[1], pos[2])
-    camera.quaternion.set(rot[0], rot[1], rot[2], rot[3])
-    const cam = camera as THREE.PerspectiveCamera
-    cam.fov = meta.fov
-    cam.near = meta.near
-    cam.far = meta.far
-    cam.updateProjectionMatrix()
-  }, [camera, enabled, meta])
+    return () => restoreIfNeeded()
+  }, [restoreIfNeeded])
 
   return null
 }
@@ -180,6 +259,83 @@ function ViewCameraReporter() {
       far: cam.far,
     }
   })
+  return null
+}
+
+function OverlayCameraRenderPass() {
+  const { gl, scene, camera, raycaster } = useThree()
+  useEffect(() => {
+    camera.layers.enable(CAMERA_GIZMO_OVERLAY_LAYER)
+    raycaster.layers.enable(CAMERA_GIZMO_OVERLAY_LAYER)
+  }, [camera, raycaster])
+
+  useFrame(() => {
+    const prevAutoClear = gl.autoClear
+    const prevMask = camera.layers.mask
+
+    gl.autoClear = true
+    camera.layers.set(0)
+    gl.render(scene, camera)
+
+    gl.autoClear = false
+    gl.clearDepth()
+    camera.layers.set(CAMERA_GIZMO_OVERLAY_LAYER)
+    gl.render(scene, camera)
+
+    camera.layers.mask = prevMask
+    gl.autoClear = prevAutoClear
+  }, 1)
+  return null
+}
+
+function PeekThroughCamera({
+  request,
+  enabled,
+  worldToView,
+}: {
+  request: { camera: CameraVisual; token: number } | null
+  enabled: boolean
+  worldToView: THREE.Quaternion
+}) {
+  const { camera } = useThree()
+
+  useLayoutEffect(() => {
+    if (!enabled || !request) return
+
+    const cam = camera as THREE.PerspectiveCamera
+    const meta = request.camera
+
+    const posWorld = meta.position ?? [0, 0, 0]
+    const rotWorld = meta.rotation ?? [0, 0, 0, 1]
+    const posView = new THREE.Vector3(posWorld[0], posWorld[1], posWorld[2]).applyQuaternion(worldToView)
+    const qWorld = new THREE.Quaternion(rotWorld[0], rotWorld[1], rotWorld[2], rotWorld[3]).normalize()
+    const qView = worldToView.clone().multiply(qWorld).normalize()
+
+    cam.position.copy(posView)
+    cam.quaternion.copy(qView)
+    if (Number.isFinite(meta.fov)) {
+      cam.fov = THREE.MathUtils.clamp(meta.fov as number, 5, 175)
+    }
+    const near = Number.isFinite(meta.near) ? Math.max(0.0001, meta.near as number) : cam.near
+    const far = Number.isFinite(meta.far) ? Math.max(near + 0.01, meta.far as number) : cam.far
+    cam.near = near
+    cam.far = far
+    cam.updateProjectionMatrix()
+
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(qView).normalize()
+    const targetDistance = THREE.MathUtils.clamp(Math.max(near * 8, 1.0), 0.25, 10)
+    const target = posView.clone().add(forward.multiplyScalar(targetDistance))
+
+    const anyCam = camera as unknown as { controls?: { target: THREE.Vector3; update: () => void } }
+    if (anyCam.controls) {
+      anyCam.controls.target.copy(target)
+      anyCam.controls.update()
+    } else {
+      ;(camera as any).userData = (camera as any).userData ?? {}
+      ;(camera as any).userData.pendingOrbitTarget = target.clone()
+    }
+  }, [camera, enabled, request, worldToView])
+
   return null
 }
 
@@ -215,12 +371,14 @@ export default function PointCloudCanvas({
   cloudIds,
   gaussianIds = [],
   cameraIds = [],
+  cameraVisuals = [],
   selectedId,
   onSelect,
   focusTarget,
   onFocus,
   cloudMetaBounds,
   gaussianMetaBounds = [],
+  cameraMetaBounds = [],
   activeCameraId,
   transformMode = 'translate',
   onTransformCommit,
@@ -228,12 +386,14 @@ export default function PointCloudCanvas({
   cloudIds: string[]
   gaussianIds?: string[]
   cameraIds?: string[]
+  cameraVisuals?: CameraVisual[]
   selectedId: string | null
   onSelect: (id: string | null) => void
   focusTarget: string | null
   onFocus: (id: string | null) => void
   cloudMetaBounds: { min: [number, number, number]; max: [number, number, number] }[]
   gaussianMetaBounds?: { min: [number, number, number]; max: [number, number, number] }[]
+  cameraMetaBounds?: { min: [number, number, number]; max: [number, number, number] }[]
   activeCameraId?: string | null
   transformMode?: 'translate' | 'rotate'
   onTransformCommit?: (id: string, position: [number, number, number], rotation: [number, number, number, number]) => void
@@ -313,6 +473,7 @@ export default function PointCloudCanvas({
       return t + 1
     })
   }, [])
+  const [peekRequest, setPeekRequest] = useState<{ camera: CameraVisual; token: number } | null>(null)
 
   // IMPORTANT: refit whenever convention changes.
   useEffect(() => {
@@ -327,6 +488,18 @@ export default function PointCloudCanvas({
   }, [conventionId])
 
   const topDownOnFocus = false
+
+  const cameraVisualById = useMemo(() => {
+    const byId = new Map<string, CameraVisual>()
+    for (const c of cameraVisuals) byId.set(c.id, c)
+    return byId
+  }, [cameraVisuals])
+  const triggerCameraPeek = useCallback((id: string, source?: string) => {
+    void source
+    const cam = cameraVisualById.get(id)
+    if (!cam) return
+    setPeekRequest({ camera: cam, token: performance.now() })
+  }, [cameraVisualById])
 
   // Initialize focus when elements first appear.
   const prevElementCount = useRef(0)
@@ -364,13 +537,21 @@ export default function PointCloudCanvas({
       return
     }
 
+    const focusedCamera = cameraVisualById.get(focusTarget)
+    if (focusedCamera) {
+      setFocusId(focusTarget)
+      triggerCameraPeek(focusTarget, 'effect:focusTarget-camera')
+      onFocus(null)
+      return
+    }
+
     // Always refit, even if focusTarget equals current focus id.
     setFocusId(focusTarget)
     bumpFocus('effect:focusTarget')
 
     // Consume the request so it doesn't refire on every render/poll tick.
     onFocus(null)
-  }, [allElementIds, focusTarget, bumpFocus, onFocus])
+  }, [allElementIds, focusTarget, bumpFocus, cameraVisualById, triggerCameraPeek, onFocus])
 
   // First cloud decoded bounds:
   const firstCloudId = cloudIds[0] ?? ''
@@ -383,8 +564,8 @@ export default function PointCloudCanvas({
   // Scene bounds from meta:
   const scene = useSceneBounds()
   useEffect(() => {
-    scene.setBoundsFromMeta([...cloudMetaBounds, ...gaussianMetaBounds])
-  }, [cloudMetaBounds, gaussianMetaBounds, scene])
+    scene.setBoundsFromMeta([...cloudMetaBounds, ...gaussianMetaBounds, ...cameraMetaBounds])
+  }, [cloudMetaBounds, gaussianMetaBounds, cameraMetaBounds, scene])
 
   const focusBounds = useMemo(() => {
     let b: Bounds3 | null = null
@@ -403,6 +584,13 @@ export default function PointCloudCanvas({
         if (gIdx >= 0) {
           const mb = gaussianMetaBounds[gIdx]
           if (mb) b = { min: new THREE.Vector3(...mb.min), max: new THREE.Vector3(...mb.max) }
+        } else {
+          // Search in cameras
+          const camIdx = cameraIds.findIndex((x) => x === focusId)
+          if (camIdx >= 0) {
+            const mb = cameraMetaBounds[camIdx]
+            if (mb) b = { min: new THREE.Vector3(...mb.min), max: new THREE.Vector3(...mb.max) }
+          }
         }
       }
       if (!b) b = scene.bounds
@@ -410,7 +598,19 @@ export default function PointCloudCanvas({
 
     if (!b) return null
     return transformBounds(b, convention.worldToView)
-  }, [cloudIds, gaussianIds, cloudMetaBounds, gaussianMetaBounds, convention.worldToView, firstCloudId, firstDecodedBounds, focusId, scene.bounds])
+  }, [
+    cameraIds,
+    cameraMetaBounds,
+    cloudIds,
+    gaussianIds,
+    cloudMetaBounds,
+    gaussianMetaBounds,
+    convention.worldToView,
+    firstCloudId,
+    firstDecodedBounds,
+    focusId,
+    scene.bounds,
+  ])
 
   const canvasGesture = useRef(createClickGesture())
   const objectMapRef = useRef<Map<string, THREE.Object3D>>(new Map())
@@ -428,12 +628,14 @@ export default function PointCloudCanvas({
   }, [selectedId, objectsVersion])
 
   const activeCameraState = useCamera(activeCameraId ?? '')
+  const activeCameraReady = !!activeCameraId && activeCameraState.status === 'ready'
+  const activeCameraMeta = activeCameraState.status === 'ready' ? activeCameraState.meta : null
 
   useEffect(() => {
     if (orbitRef.current) {
-      orbitRef.current.enabled = !activeCameraId
+      orbitRef.current.enabled = !activeCameraReady
     }
-  }, [activeCameraId])
+  }, [activeCameraReady])
 
   return (
     <Canvas
@@ -466,19 +668,19 @@ export default function PointCloudCanvas({
     >
       <DebugOverlay enabled={debugOverlayEnabled} />
       <ViewCameraReporter />
+      <OverlayCameraRenderPass />
+      <PeekThroughCamera request={peekRequest} enabled={!activeCameraReady} worldToView={convention.worldToView} />
 
       <ambientLight intensity={0.6} />
       <directionalLight position={[5, 8, 5]} intensity={0.8} />
 
-      {controlsReady && focusId && (
+      {controlsReady && focusId && !activeCameraReady && (
         <FrameCamera bounds={focusBounds} focusToken={focusToken} forward={viewForward} topDown={topDownOnFocus} />
       )}
 
-      {activeCameraId && activeCameraState.status === 'ready' && (
-        <ActiveCameraDriver meta={activeCameraState.meta} enabled />
-      )}
+      <ActiveCameraDriver meta={activeCameraMeta} enabled={activeCameraReady} worldToView={convention.worldToView} />
 
-      <WASDControls enabled speed={2.0} />
+      <WASDControls enabled={!activeCameraReady} speed={2.0} />
 
       {/* Viewer-space grid */}
       <gridHelper args={[10, 10, '#29324a', '#1b2235']} />
@@ -511,46 +713,48 @@ export default function PointCloudCanvas({
           onRegisterObject={registerObject}
         />
         <CameraScene
-          cameraIds={cameraIds}
+          cameras={cameraVisuals}
           selectedId={selectedId}
           onSelect={(id) => onSelect(id)}
           onFocus={(id) => {
             setFocusId(id)
-            bumpFocus('camera:doubleclick-focus')
+            triggerCameraPeek(id, 'camera:doubleclick-peek')
             onFocus(id)
           }}
           onRegisterObject={registerObject}
         />
       </group>
 
-      <OrbitControls
-        // Do NOT key by conventionId for the same reason as Canvas.
-        makeDefault
-        minPolarAngle={0}
-        maxPolarAngle={Math.PI}
-        minDistance={0}
-        maxDistance={Infinity}
-        enableDamping
-        dampingFactor={0.07}
-        ref={(ctrl) => {
-          orbitRef.current = ctrl
-          if (!ctrl) return
+      {!activeCameraReady && (
+        <OrbitControls
+          // Do NOT key by conventionId for the same reason as Canvas.
+          makeDefault
+          minPolarAngle={0}
+          maxPolarAngle={Math.PI}
+          minDistance={0}
+          maxDistance={Infinity}
+          enableDamping
+          dampingFactor={0.07}
+          ref={(ctrl) => {
+            orbitRef.current = ctrl
+            if (!ctrl) return
 
-          const cam = (ctrl as any)?.object
-          if (cam) {
-            ;(cam as THREE.Camera).up.copy(VIEW_UP)
-            ;(cam as any).controls = ctrl
+            const cam = (ctrl as any)?.object
+            if (cam) {
+              ;(cam as THREE.Camera).up.copy(VIEW_UP)
+              ;(cam as any).controls = ctrl
 
-            const pending = (cam as any).userData?.pendingOrbitTarget as THREE.Vector3 | null | undefined
-            if (pending) {
-              ctrl.target.copy(pending)
-              ctrl.update()
-              ;(cam as any).userData.pendingOrbitTarget = null
+              const pending = (cam as any).userData?.pendingOrbitTarget as THREE.Vector3 | null | undefined
+              if (pending) {
+                ctrl.target.copy(pending)
+                ctrl.update()
+                ;(cam as any).userData.pendingOrbitTarget = null
+              }
             }
-          }
-          setControlsReady(true)
-        }}
-      />
+            setControlsReady(true)
+          }}
+        />
+      )}
 
       {selectedObject && onTransformCommit && (
         <TransformControls
