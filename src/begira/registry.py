@@ -7,7 +7,7 @@ from dataclasses import replace
 
 import numpy as np
 
-from .elements import ElementBase, PointCloudElement, GaussianSplatElement, CameraElement
+from .elements import ElementBase, PointCloudElement, GaussianSplatElement, CameraElement, ImageElement
 
 
 class InMemoryRegistry:
@@ -170,6 +170,9 @@ class InMemoryRegistry:
                     updates["height"] = height_i
                 if intrinsic_matrix is not None:
                     updates["intrinsic_matrix"] = self._normalize_intrinsic_matrix(intrinsic_matrix)
+            elif isinstance(prev, ImageElement):
+                # No image-specific mutable fields yet (payload upserts replace the element).
+                pass
 
             if not updates:
                 return prev
@@ -435,6 +438,78 @@ class InMemoryRegistry:
 
             self._elements[element_id] = cam
             return cam
+
+    def upsert_image(
+        self,
+        *,
+        name: str,
+        image_bytes: bytes,
+        mime_type: str,
+        width: int,
+        height: int,
+        channels: int,
+        element_id: str | None = None,
+    ) -> ImageElement:
+        if not image_bytes:
+            raise ValueError("image payload is empty")
+        if not isinstance(mime_type, str) or "/" not in mime_type:
+            raise ValueError("mime_type must be a valid media type, e.g. image/png")
+        width_i = int(width)
+        height_i = int(height)
+        channels_i = int(channels)
+        if width_i <= 0 or height_i <= 0:
+            raise ValueError("image width/height must be positive integers")
+        if channels_i <= 0:
+            raise ValueError("image channels must be a positive integer")
+
+        with self._lock:
+            if element_id is None:
+                element_id = uuid.uuid4().hex
+
+            self._global_revision += 1
+            now = time.time()
+            prev = self._elements.get(element_id)
+            prev_img = prev if isinstance(prev, ImageElement) else None
+
+            if prev_img is None:
+                img = ImageElement(
+                    id=element_id,
+                    type="image",
+                    name=name,
+                    image_bytes=bytes(image_bytes),
+                    mime_type=str(mime_type),
+                    width=width_i,
+                    height=height_i,
+                    channels=channels_i,
+                    revision=1,
+                    created_at=now,
+                    updated_at=now,
+                    position=(0.0, 0.0, 0.0),
+                    rotation=(0.0, 0.0, 0.0, 1.0),
+                    visible=True,
+                    deleted=False,
+                )
+            else:
+                img = ImageElement(
+                    id=prev_img.id,
+                    type="image",
+                    name=name,
+                    image_bytes=bytes(image_bytes),
+                    mime_type=str(mime_type),
+                    width=width_i,
+                    height=height_i,
+                    channels=channels_i,
+                    revision=prev_img.revision + 1,
+                    created_at=prev_img.created_at,
+                    updated_at=now,
+                    position=prev_img.position,
+                    rotation=prev_img.rotation,
+                    visible=prev_img.visible,
+                    deleted=prev_img.deleted,
+                )
+
+            self._elements[element_id] = img
+            return img
 
 
 REGISTRY = InMemoryRegistry()

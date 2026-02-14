@@ -7,7 +7,7 @@ import numpy as np
 from fastapi import FastAPI, HTTPException, Request
 from starlette.responses import Response
 
-from .elements import PointCloudElement, GaussianSplatElement, CameraElement
+from .elements import PointCloudElement, GaussianSplatElement, CameraElement, ImageElement
 from .registry import REGISTRY
 
 
@@ -84,6 +84,20 @@ def mount_elements_api(app: FastAPI) -> None:
                         "intrinsicMatrix": [list(row) for row in e.intrinsic_matrix] if e.intrinsic_matrix is not None else None,
                         "position": list(e.position),
                         "rotation": list(e.rotation),
+                        "visible": bool(e.visible),
+                        "deleted": bool(e.deleted),
+                    }
+                )
+            elif isinstance(e, ImageElement):
+                out.append(
+                    {
+                        "id": e.id,
+                        "type": e.type,
+                        "name": e.name,
+                        "revision": int(e.revision),
+                        "createdAt": float(e.created_at),
+                        "summary": {"width": int(e.width), "height": int(e.height), "channels": int(e.channels)},
+                        "mimeType": str(e.mime_type),
                         "visible": bool(e.visible),
                         "deleted": bool(e.deleted),
                     }
@@ -184,6 +198,28 @@ def mount_elements_api(app: FastAPI) -> None:
                 "deleted": bool(e.deleted),
             }
 
+        if isinstance(e, ImageElement):
+            return {
+                "id": e.id,
+                "type": e.type,
+                "name": e.name,
+                "revision": int(e.revision),
+                "width": int(e.width),
+                "height": int(e.height),
+                "channels": int(e.channels),
+                "mimeType": str(e.mime_type),
+                "position": list(e.position),
+                "rotation": list(e.rotation),
+                "visible": bool(e.visible),
+                "deleted": bool(e.deleted),
+                "payloads": {
+                    "image": {
+                        "url": f"/api/elements/{e.id}/payloads/image",
+                        "contentType": str(e.mime_type),
+                    }
+                },
+            }
+
         raise HTTPException(status_code=400, detail=f"Unsupported element type: {e.type}")
 
     @app.get("/api/elements/{element_id}/payloads/{payload_name}")
@@ -226,6 +262,11 @@ def mount_elements_api(app: FastAPI) -> None:
             out[:, 10:14] = e.rotations
 
             return Response(content=out.tobytes(order="C"), media_type="application/octet-stream")
+
+        if isinstance(e, ImageElement):
+            if payload_name != "image":
+                raise HTTPException(status_code=404, detail="Unknown payload")
+            return Response(content=e.image_bytes, media_type=str(e.mime_type))
 
         raise HTTPException(status_code=400, detail=f"Unsupported element type: {e.type}")
 
@@ -426,6 +467,102 @@ def mount_elements_api(app: FastAPI) -> None:
         )
 
         return {"ok": True, "id": gs.id, "type": gs.type, "revision": int(gs.revision), "count": gs.count}
+
+    @app.post("/api/elements/images/upload")
+    def request_image_upload(body: dict) -> dict:
+        """Request an upload slot for an image element."""
+        try:
+            name = str(body.get("name"))
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid name")
+        if not name:
+            raise HTTPException(status_code=400, detail="Missing name")
+
+        try:
+            width = int(body.get("width"))
+            height = int(body.get("height"))
+            channels = int(body.get("channels"))
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid image dimensions")
+
+        if width <= 0 or height <= 0:
+            raise HTTPException(status_code=400, detail="width/height must be positive integers")
+        if channels <= 0:
+            raise HTTPException(status_code=400, detail="channels must be a positive integer")
+
+        mime_type_raw = body.get("mimeType", body.get("mime_type", "image/png"))
+        try:
+            mime_type = str(mime_type_raw)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid mimeType")
+        if "/" not in mime_type:
+            raise HTTPException(status_code=400, detail="Invalid mimeType")
+
+        element_id = body.get("elementId")
+        if element_id is not None:
+            element_id = str(element_id).strip() or None
+        if element_id is None:
+            element_id = uuid.uuid4().hex
+
+        return {
+            "id": element_id,
+            "type": "image",
+            "name": name,
+            "width": width,
+            "height": height,
+            "channels": channels,
+            "mimeType": mime_type,
+            "uploadUrl": f"/api/elements/{element_id}/payloads/image",
+        }
+
+    @app.put("/api/elements/{element_id}/payloads/image")
+    async def upload_image_payload(element_id: str, request: Request) -> dict:
+        name = request.query_params.get("name")
+        if not name:
+            raise HTTPException(status_code=400, detail="Missing query param: name")
+
+        mime_type = request.query_params.get("mimeType", request.query_params.get("mime_type", "image/png"))
+        if "/" not in mime_type:
+            raise HTTPException(status_code=400, detail="Invalid query param: mimeType")
+
+        try:
+            width = int(request.query_params.get("width", "0"))
+            height = int(request.query_params.get("height", "0"))
+            channels = int(request.query_params.get("channels", "0"))
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid image dimensions")
+
+        if width <= 0 or height <= 0:
+            raise HTTPException(status_code=400, detail="width/height must be positive integers")
+        if channels <= 0:
+            raise HTTPException(status_code=400, detail="channels must be a positive integer")
+
+        raw = await request.body()
+        if len(raw) == 0:
+            raise HTTPException(status_code=400, detail="Image payload is empty")
+
+        try:
+            img = REGISTRY.upsert_image(
+                name=name,
+                image_bytes=raw,
+                mime_type=mime_type,
+                width=width,
+                height=height,
+                channels=channels,
+                element_id=element_id,
+            )
+        except (TypeError, ValueError) as ex:
+            raise HTTPException(status_code=400, detail=str(ex))
+
+        return {
+            "ok": True,
+            "id": img.id,
+            "type": img.type,
+            "revision": int(img.revision),
+            "width": int(img.width),
+            "height": int(img.height),
+            "channels": int(img.channels),
+        }
 
     @app.post("/api/elements/cameras")
     def create_camera(body: dict) -> dict[str, Any]:

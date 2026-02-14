@@ -1,36 +1,89 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import PointCloudCanvas from './viewer/PointCloudCanvas'
 import { fetchElementMeta, fetchElements, fetchEvents, updateElementMeta, deleteElement, resetProject, createCamera, type ElementInfo } from './viewer/api'
 import Inspector from './viewer/Inspector'
-import Hierarchy, { type HierarchyProps } from './viewer/Hierarchy'
+import Hierarchy, { type HierarchyProps, type HierarchyViewInfo } from './viewer/Hierarchy'
+import DockWorkspace, { type DockImageView, type DockWorkspaceHandle } from './viewer/DockWorkspace'
 
-function CollapseHandle({ side, open, onToggle }: { side: 'left' | 'right'; open: boolean; onToggle: () => void }) {
+const MAIN_3D_VIEW_ID = 'view-3d-main'
+const IMAGE_VIEW_PREFIX = 'view-image-'
+
+function imageViewId(imageId: string): string {
+  return `${IMAGE_VIEW_PREFIX}${imageId}`
+}
+
+function imageIdFromViewId(viewId: string): string | null {
+  if (!viewId.startsWith(IMAGE_VIEW_PREFIX)) return null
+  return viewId.slice(IMAGE_VIEW_PREFIX.length)
+}
+
+function centerFromBounds(bounds?: { min: [number, number, number]; max: [number, number, number] }): [number, number, number] | null {
+  if (!bounds) return null
+  return [
+    (bounds.min[0] + bounds.max[0]) * 0.5,
+    (bounds.min[1] + bounds.max[1]) * 0.5,
+    (bounds.min[2] + bounds.max[2]) * 0.5,
+  ]
+}
+
+function clamp(v: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, v))
+}
+
+function CollapseHandle({
+  side,
+  open,
+  onToggle,
+  onResizeStart,
+}: {
+  side: 'left' | 'right'
+  open: boolean
+  onToggle: () => void
+  onResizeStart: (e: React.MouseEvent<HTMLDivElement>) => void
+}) {
   const isLeft = side === 'left'
   const label = isLeft ? (open ? 'Collapse scene' : 'Expand scene') : open ? 'Collapse inspector' : 'Expand inspector'
   const glyph = isLeft ? (open ? '◀' : '▶') : open ? '▶' : '◀'
 
   return (
     <div
+      onMouseDown={onResizeStart}
       style={{
-        width: 18,
-        minWidth: 18,
+        width: 14,
+        minWidth: 14,
+        flex: '0 0 14px',
         position: 'relative',
+        zIndex: 4,
         background: '#0b1020',
         borderLeft: isLeft ? 0 : '1px solid #1b2235',
         borderRight: isLeft ? '1px solid #1b2235' : 0,
+        cursor: open ? 'col-resize' : 'default',
       }}
     >
+      <div
+        style={{
+          position: 'absolute',
+          top: 0,
+          bottom: 0,
+          left: '50%',
+          width: 1,
+          transform: 'translateX(-50%)',
+          background: '#1b2235',
+          opacity: open ? 0.8 : 0.45,
+          pointerEvents: 'none',
+        }}
+      />
       <button
         type="button"
         aria-label={label}
         title={label}
+        onMouseDown={(e) => e.stopPropagation()}
         onClick={onToggle}
         style={{
           position: 'absolute',
           top: '50%',
           left: '50%',
           transform: 'translate(-50%, -50%)',
-          width: 22,
+          width: 20,
           height: 54,
           padding: 0,
           borderRadius: 999,
@@ -74,10 +127,132 @@ export default function App() {
   const [historyCounts, setHistoryCounts] = useState({ undo: 0, redo: 0 })
   const resettingRef = useRef(false)
   const [isResetting, setIsResetting] = useState(false)
+  const workspaceRef = useRef<DockWorkspaceHandle | null>(null)
+  const [leftWidth, setLeftWidth] = useState(300)
+  const [rightWidth, setRightWidth] = useState(300)
+  const [threeDViewVisible, setThreeDViewVisible] = useState(true)
+  const [imageViewOrder, setImageViewOrder] = useState<string[]>([])
+  const [imageViewState, setImageViewState] = useState<Record<string, { visible: boolean; deleted: boolean }>>({})
 
   const pointclouds = useMemo(() => (elements ?? []).filter((e) => e.type === 'pointcloud'), [elements])
   const gaussians = useMemo(() => (elements ?? []).filter((e) => e.type === 'gaussians'), [elements])
   const cameras = useMemo(() => (elements ?? []).filter((e) => e.type === 'camera'), [elements])
+  const images = useMemo(() => (elements ?? []).filter((e) => e.type === 'image'), [elements])
+  const imagesById = useMemo(() => new Map(images.map((img) => [img.id, img])), [images])
+
+  useEffect(() => {
+    const ids = images.map((img) => img.id)
+    const idSet = new Set(ids)
+
+    setImageViewOrder((prev) => {
+      const kept = prev.filter((id) => idSet.has(id))
+      for (const id of ids) {
+        if (!kept.includes(id)) kept.push(id)
+      }
+      return kept
+    })
+
+    setImageViewState((prev) => {
+      const next: Record<string, { visible: boolean; deleted: boolean }> = {}
+      for (const id of ids) {
+        next[id] = prev[id] ?? { visible: true, deleted: false }
+      }
+      return next
+    })
+  }, [images])
+
+  const imageViews = useMemo(() => {
+    const out: Array<{ id: string; imageId: string; name: string; visible: boolean; deleted: boolean; elementVisible: boolean }> = []
+    for (const imageId of imageViewOrder) {
+      const img = imagesById.get(imageId)
+      if (!img) continue
+      const state = imageViewState[imageId] ?? { visible: true, deleted: false }
+      out.push({
+        id: imageViewId(imageId),
+        imageId,
+        name: img.name,
+        visible: state.visible,
+        deleted: state.deleted,
+        elementVisible: img.visible !== false,
+      })
+    }
+    return out
+  }, [imageViewOrder, imageViewState, imagesById])
+
+  const dockImageViews = useMemo<DockImageView[]>(
+    () =>
+      imageViews
+        .filter((v) => !v.deleted && v.visible && v.elementVisible)
+        .map((v) => ({
+          id: v.id,
+          imageId: v.imageId,
+          name: v.name,
+          visible: true,
+        })),
+    [imageViews]
+  )
+
+  const hierarchyViews = useMemo<HierarchyViewInfo[]>(() => {
+    const threeDElementIds = (elements ?? []).filter((e) => e.type !== 'image').map((e) => e.id)
+    return [
+      {
+        id: MAIN_3D_VIEW_ID,
+        name: '3D',
+        kind: '3d',
+        visible: threeDViewVisible,
+        canDelete: false,
+        canReorder: false,
+        elementIds: threeDElementIds,
+      },
+      ...imageViews
+        .filter((v) => !v.deleted)
+        .map((v) => ({
+          id: v.id,
+          name: v.name,
+          kind: 'image' as const,
+          visible: v.visible && v.elementVisible,
+          canDelete: true,
+          canReorder: true,
+          elementIds: [v.imageId],
+        })),
+    ]
+  }, [elements, imageViews, threeDViewVisible])
+
+  const lookAtTargets = useMemo(
+    () =>
+      (elements ?? [])
+        .filter((e) => e.type !== 'image')
+        .map((e) => {
+          const p = e.position ?? centerFromBounds(e.bounds) ?? [0, 0, 0]
+          return {
+            id: e.id,
+            name: e.name,
+            type: e.type,
+            position: [p[0], p[1], p[2]] as [number, number, number],
+          }
+        }),
+    [elements]
+  )
+
+  const setImageViewFlags = (imageId: string, patch: Partial<{ visible: boolean; deleted: boolean }>) => {
+    setImageViewState((prev) => {
+      const cur = prev[imageId] ?? { visible: true, deleted: false }
+      return { ...prev, [imageId]: { ...cur, ...patch } }
+    })
+  }
+
+  const openImageView = (imageId: string) => {
+    const img = imagesById.get(imageId)
+    if (!img) return
+    setImageViewOrder((prev) => (prev.includes(imageId) ? prev : [...prev, imageId]))
+    setImageViewFlags(imageId, { visible: true, deleted: false })
+    if (img.visible === false) void applyVisibility(imageId, true)
+    setSelectedId(imageId)
+    setFocusTarget(null)
+    window.setTimeout(() => {
+      workspaceRef.current?.focusImage(imageId)
+    }, 0)
+  }
 
   const orderElements = (items: ElementInfo[]) => {
     const orderMap = orderRef.current
@@ -340,6 +515,37 @@ export default function App() {
     })
   }
 
+  const beginResize = (side: 'left' | 'right', e: React.MouseEvent<HTMLDivElement>) => {
+    if ((side === 'left' && !leftOpen) || (side === 'right' && !rightOpen)) return
+    if (e.button !== 0) return
+    e.preventDefault()
+
+    const startX = e.clientX
+    const startW = side === 'left' ? leftWidth : rightWidth
+    const minW = 220
+    const maxW = 520
+
+    const onMove = (ev: MouseEvent) => {
+      const dx = ev.clientX - startX
+      const raw = side === 'left' ? startW + dx : startW - dx
+      const nextW = clamp(raw, minW, maxW)
+      if (side === 'left') setLeftWidth(nextW)
+      else setRightWidth(nextW)
+    }
+
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      document.body.style.userSelect = ''
+      document.body.style.cursor = ''
+    }
+
+    document.body.style.userSelect = 'none'
+    document.body.style.cursor = 'col-resize'
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
   return (
     <div className="app" style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
       <div className="header" style={{ borderBottom: '1px solid #1b2235', background: '#0b1020', color: '#e8ecff' }}>
@@ -398,105 +604,130 @@ export default function App() {
       </div>
 
       <div className="viewer" style={{ display: 'flex', flex: 1, minHeight: 0, background: '#0b1020', position: 'relative' }}>
-        <div
-          style={{
-            position: 'absolute',
-            top: 10,
-            left: '50%',
-            transform: 'translateX(-50%)',
-            display: 'flex',
-            gap: 6,
-            padding: '6px 8px',
-            borderRadius: 999,
-            border: '1px solid #1b2235',
-            background: 'rgba(11, 16, 32, 0.9)',
-            color: '#e8ecff',
-            zIndex: 5,
-          }}
-        >
-          <button
-            onClick={() => setTransformMode('translate')}
-            style={{
-              padding: '4px 8px',
-              borderRadius: 999,
-              border: '1px solid #1b2235',
-              background: transformMode === 'translate' ? '#172242' : '#0f1630',
-              color: '#e8ecff',
-              cursor: 'pointer',
-              fontSize: 12,
-            }}
-          >
-            Move
-          </button>
-          <button
-            onClick={() => setTransformMode('rotate')}
-            style={{
-              padding: '4px 8px',
-              borderRadius: 999,
-              border: '1px solid #1b2235',
-              background: transformMode === 'rotate' ? '#172242' : '#0f1630',
-              color: '#e8ecff',
-              cursor: 'pointer',
-              fontSize: 12,
-            }}
-          >
-            Rotate
-          </button>
-        </div>
         {leftOpen && (
-          <div style={{ borderRight: '1px solid #1b2235', background: '#0f1630', color: '#e8ecff' }}>
+          <div
+            style={{
+              width: leftWidth,
+              minWidth: leftWidth,
+              maxWidth: leftWidth,
+              borderRight: '1px solid #1b2235',
+              background: '#0f1630',
+              color: '#e8ecff',
+              flex: '0 0 auto',
+              position: 'relative',
+              zIndex: 5,
+            }}
+          >
             <Hierarchy
               {...({
                 elements,
                 selectedId,
                 onSelect: setSelectedId,
-                onFocus: (id: string) => setFocusTarget(id),
+                onFocus: (id: string) => {
+                  const el = elements?.find((e) => e.id === id)
+                  if (el?.type === 'image') {
+                    openImageView(id)
+                    return
+                  }
+                  setFocusTarget(id)
+                },
                 onToggleVisibility: (id: string, visible: boolean) => void applyVisibility(id, visible),
                 onDelete: (id: string) => void removeElement(id),
                 onAddCamera: () => void addCameraFromView(),
+                views: hierarchyViews,
+                onActivateView: (viewId: string) => {
+                  if (viewId === MAIN_3D_VIEW_ID) return
+                  const imageId = imageIdFromViewId(viewId)
+                  if (!imageId) return
+                  openImageView(imageId)
+                },
+                onToggleViewVisibility: (viewId: string, visible: boolean) => {
+                  if (viewId === MAIN_3D_VIEW_ID) {
+                    setThreeDViewVisible(visible)
+                    return
+                  }
+                  const imageId = imageIdFromViewId(viewId)
+                  if (!imageId) return
+                  setImageViewFlags(imageId, { visible })
+                  void applyVisibility(imageId, visible)
+                },
+                onDeleteView: (viewId: string) => {
+                  const imageId = imageIdFromViewId(viewId)
+                  if (!imageId) return
+                  setImageViewFlags(imageId, { deleted: true, visible: false })
+                  setImageViewOrder((prev) => prev.filter((id) => id !== imageId))
+                },
+                onMoveView: (viewId: string, direction: 'up' | 'down') => {
+                  const imageId = imageIdFromViewId(viewId)
+                  if (!imageId) return
+                  setImageViewOrder((prev) => {
+                    const idx = prev.indexOf(imageId)
+                    if (idx < 0) return prev
+                    const nextIdx = direction === 'up' ? idx - 1 : idx + 1
+                    if (nextIdx < 0 || nextIdx >= prev.length) return prev
+                    const out = [...prev]
+                    const tmp = out[idx]
+                    out[idx] = out[nextIdx]
+                    out[nextIdx] = tmp
+                    return out
+                  })
+                },
               } satisfies HierarchyProps)}
             />
           </div>
         )}
 
-        <CollapseHandle side="left" open={leftOpen} onToggle={() => setLeftOpen((v) => !v)} />
+        <CollapseHandle
+          side="left"
+          open={leftOpen}
+          onToggle={() => setLeftOpen((v) => !v)}
+          onResizeStart={(e) => beginResize('left', e)}
+        />
 
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <PointCloudCanvas
-            cloudIds={pointclouds.map((c) => c.id)}
-            gaussianIds={gaussians.map((c) => c.id)}
-            cameraIds={cameras.map((c) => c.id)}
-            cameraVisuals={cameras.map((c) => ({
-              id: c.id,
-              position: c.position,
-              rotation: c.rotation,
-              fov: c.fov,
-              near: c.near,
-              far: c.far,
-              visible: c.visible,
-            }))}
+        <div style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: 'hidden', position: 'relative', zIndex: 1 }}>
+          <DockWorkspace
+            ref={workspaceRef}
+            pointclouds={pointclouds}
+            gaussians={gaussians}
+            cameras={cameras}
+            images={images}
             selectedId={selectedId}
-            onSelect={setSelectedId}
-            focusTarget={focusTarget}
-            onFocus={(id) => {
-              // `id` from the canvas is used only to *clear* a pending focus request.
-              // Camera focus requests come from double-click actions (Hierarchy / scene).
-              if (id === null) setFocusTarget(null)
-              else setFocusTarget(id)
+            onSelect={(id) => {
+              setSelectedId(id)
+              setFocusTarget(null)
             }}
-            cloudMetaBounds={pointclouds.map((c) => c.bounds).filter(Boolean) as any}
-            gaussianMetaBounds={gaussians.map((c) => c.bounds).filter(Boolean) as any}
-            cameraMetaBounds={cameras.map((c) => c.bounds).filter(Boolean) as any}
+            focusTarget={focusTarget}
+            onFocus={(id) => setFocusTarget(id)}
             activeCameraId={activeCameraId}
             transformMode={transformMode}
+            onTransformModeChange={setTransformMode}
             onTransformCommit={(id, position, rotation) => void onTransformCommit(id, position, rotation)}
+            show3D={threeDViewVisible}
+            imageViews={dockImageViews}
           />
         </div>
 
-        <CollapseHandle side="right" open={rightOpen} onToggle={() => setRightOpen((v) => !v)} />
+        <CollapseHandle
+          side="right"
+          open={rightOpen}
+          onToggle={() => setRightOpen((v) => !v)}
+          onResizeStart={(e) => beginResize('right', e)}
+        />
 
         {rightOpen && (
-          <div style={{ borderLeft: '1px solid #1b2235', background: '#0f1630', color: '#e8ecff' }}>
+          <div
+            style={{
+              width: rightWidth,
+              minWidth: rightWidth,
+              maxWidth: rightWidth,
+              borderLeft: '1px solid #1b2235',
+              background: '#0f1630',
+              color: '#e8ecff',
+              flex: '0 0 auto',
+              position: 'relative',
+              zIndex: 5,
+            }}
+          >
             <Inspector
               selected={selected}
               activeCameraId={activeCameraId}
@@ -505,6 +736,7 @@ export default function App() {
               transformMode={transformMode}
               onTransformModeChange={setTransformMode}
               onPoseCommit={(id, position, rotation) => void onTransformCommit(id, position, rotation)}
+              lookAtTargets={lookAtTargets}
             />
           </div>
         )}

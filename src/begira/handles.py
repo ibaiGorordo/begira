@@ -391,3 +391,36 @@ class CameraHandle(ElementHandle):
         if k.shape != (3, 3):
             raise ValueError(f"Camera '{self.id}' intrinsic matrix has invalid shape {k.shape}")
         return k
+
+
+class ImageHandle(ElementHandle):
+    @property
+    def width(self) -> int:
+        value = self.get_meta().get("width")
+        if value is None:
+            raise ValueError(f"Image '{self.id}' metadata does not expose width")
+        return int(value)
+
+    @property
+    def height(self) -> int:
+        value = self.get_meta().get("height")
+        if value is None:
+            raise ValueError(f"Image '{self.id}' metadata does not expose height")
+        return int(value)
+
+    @property
+    def channels(self) -> int:
+        value = self.get_meta().get("channels")
+        if value is None:
+            raise ValueError(f"Image '{self.id}' metadata does not expose channels")
+        return int(value)
+
+    @property
+    def mime_type(self) -> str:
+        meta = self.get_meta()
+        value = meta.get("mimeType")
+        if value is None:
+            value = meta.get("mime_type")
+        if not isinstance(value, str):
+            raise ValueError(f"Image '{self.id}' metadata does not expose mimeType")
+        return value

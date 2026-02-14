@@ -5,6 +5,7 @@ import {
   fetchPointCloudElementMeta,
   fetchGaussianElementMeta,
   fetchCameraElementMeta,
+  fetchImageElementMeta,
   fetchElementMeta,
   updatePointCloudSettings,
   updateElementMeta,
@@ -20,6 +21,12 @@ type Props = {
   transformMode: 'translate' | 'rotate'
   onTransformModeChange: (mode: 'translate' | 'rotate') => void
   onPoseCommit: (id: string, position: [number, number, number], rotation: [number, number, number, number]) => void
+  lookAtTargets: Array<{
+    id: string
+    name: string
+    type: ElementInfo['type']
+    position: [number, number, number]
+  }>
 }
 
 export default function Inspector({
@@ -30,6 +37,7 @@ export default function Inspector({
   transformMode,
   onTransformModeChange,
   onPoseCommit,
+  lookAtTargets,
 }: Props) {
   const [pointSize, setPointSize] = useState<number | null>(null)
   const [busy, setBusy] = useState(false)
@@ -45,6 +53,7 @@ export default function Inspector({
   const isPointCloud = selected?.type === 'pointcloud'
   const isGaussians = selected?.type === 'gaussians'
   const isCamera = selected?.type === 'camera'
+  const isImage = selected?.type === 'image'
 
   // LOD override state
   const [lodOverride, setLodOverride] = useState<string | undefined>(undefined)
@@ -68,6 +77,13 @@ export default function Inspector({
   const [fov, setFov] = useState<number | null>(null)
   const [near, setNear] = useState<number | null>(null)
   const [far, setFar] = useState<number | null>(null)
+  const [imgWidth, setImgWidth] = useState<number | null>(null)
+  const [imgHeight, setImgHeight] = useState<number | null>(null)
+  const [imgChannels, setImgChannels] = useState<number | null>(null)
+  const [imgMime, setImgMime] = useState<string | null>(null)
+  const [lookAtTargetId, setLookAtTargetId] = useState<string>('')
+
+  const availableLookAtTargets = lookAtTargets.filter((t) => t.id !== selected?.id && t.type !== 'image')
 
   useEffect(() => {
     setErr(null)
@@ -83,6 +99,8 @@ export default function Inspector({
         ? fetchGaussianElementMeta
         : isCamera
           ? fetchCameraElementMeta
+          : isImage
+            ? fetchImageElementMeta
           : null
     if (!fetchMeta) {
       setPointSize(null)
@@ -111,6 +129,10 @@ export default function Inspector({
         setFov(m.fov ?? null)
         setNear(m.near ?? null)
         setFar(m.far ?? null)
+        setImgWidth(m.width ?? null)
+        setImgHeight(m.height ?? null)
+        setImgChannels(m.channels ?? null)
+        setImgMime(m.mimeType ?? null)
         window.setTimeout(() => {
           suppressPoseCommitRef.current = false
         }, 0)
@@ -145,7 +167,7 @@ export default function Inspector({
         setColorMap(DEFAULT_HEIGHT_COLORMAP)
       }
     } catch {}
-  }, [selected?.id, isPointCloud, isGaussians, isCamera])
+  }, [selected?.id, isPointCloud, isGaussians, isCamera, isImage])
 
   useEffect(() => {
     try {
@@ -342,6 +364,10 @@ export default function Inspector({
         if (meta.fov !== undefined) setFov(meta.fov)
         if (meta.near !== undefined) setNear(meta.near)
         if (meta.far !== undefined) setFar(meta.far)
+        if (meta.width !== undefined) setImgWidth(meta.width)
+        if (meta.height !== undefined) setImgHeight(meta.height)
+        if (meta.channels !== undefined) setImgChannels(meta.channels)
+        if (meta.mimeType !== undefined) setImgMime(meta.mimeType)
         window.setTimeout(() => {
           suppressPoseCommitRef.current = false
         }, 0)
@@ -379,6 +405,56 @@ export default function Inspector({
     }, 50)
     return () => window.clearTimeout(handle)
   }, [fov, near, far, selected?.id, isCamera])
+
+  useEffect(() => {
+    if (!isCamera) {
+      setLookAtTargetId('')
+      return
+    }
+    if (availableLookAtTargets.length === 0) {
+      setLookAtTargetId('')
+      return
+    }
+    setLookAtTargetId((prev) => {
+      if (prev && availableLookAtTargets.some((t) => t.id === prev)) return prev
+      return availableLookAtTargets[0].id
+    })
+  }, [isCamera, selected?.id, availableLookAtTargets])
+
+  const lookAtSelectedTarget = () => {
+    if (!selected || !isCamera || !position) return
+    if (!lookAtTargetId) return
+    const target = availableLookAtTargets.find((t) => t.id === lookAtTargetId)
+    if (!target) return
+
+    const from = new THREE.Vector3(position[0], position[1], position[2])
+    const to = new THREE.Vector3(target.position[0], target.position[1], target.position[2])
+    const dir = to.clone().sub(from)
+    if (dir.lengthSq() < 1e-12) return
+    dir.normalize()
+
+    const up = new THREE.Vector3(0, 1, 0)
+    if (Math.abs(dir.dot(up)) > 0.98) up.set(0, 0, 1)
+
+    const cam = new THREE.PerspectiveCamera()
+    cam.position.copy(from)
+    cam.up.copy(up)
+    cam.lookAt(to)
+    cam.updateMatrixWorld()
+
+    const q = cam.quaternion.clone().normalize()
+    const nextRotation: [number, number, number, number] = [q.x, q.y, q.z, q.w]
+    const euler = new THREE.Euler().setFromQuaternion(q, 'XYZ')
+    const nextEuler: [number, number, number] = [
+      THREE.MathUtils.radToDeg(euler.x),
+      THREE.MathUtils.radToDeg(euler.y),
+      THREE.MathUtils.radToDeg(euler.z),
+    ]
+
+    manualPoseEditRef.current = true
+    setRotation(nextRotation)
+    setRotationEuler(nextEuler)
+  }
 
   const startDragNumber =
     (
@@ -421,7 +497,7 @@ export default function Inspector({
 
   if (!selected) {
     return (
-      <div style={{ padding: 12, borderLeft: '1px solid #1b2235', width: 280 }}>
+      <div style={{ padding: 12, borderLeft: '1px solid #1b2235', width: '100%', boxSizing: 'border-box' }}>
         <strong>Inspector</strong>
         <div style={{ marginTop: 8, opacity: 0.75 }}>Select an element.</div>
       </div>
@@ -429,7 +505,7 @@ export default function Inspector({
   }
 
   return (
-    <div style={{ padding: 12, borderLeft: '1px solid #1b2235', width: 280 }}>
+    <div style={{ padding: 12, borderLeft: '1px solid #1b2235', width: '100%', boxSizing: 'border-box' }}>
       <strong>Inspector</strong>
       <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8 }}>id</div>
       <div style={{ fontFamily: 'monospace', fontSize: 12, wordBreak: 'break-all' }}>{selected.id}</div>
@@ -464,20 +540,40 @@ export default function Inspector({
 
       {isCamera && (
         <div style={{ marginTop: 10 }}>
-          <button
-            onClick={() => onSetActiveCamera(activeCameraId === selected.id ? null : selected.id)}
-            style={{
-              padding: '6px 8px',
-              borderRadius: 6,
-              border: '1px solid #1b2235',
-              background: activeCameraId === selected.id ? '#172242' : '#0f1630',
-              color: '#e8ecff',
-              cursor: 'pointer',
-              fontSize: 12,
-            }}
-          >
-            {activeCameraId === selected.id ? 'Exit Camera View' : 'View From Camera'}
-          </button>
+          <div style={{ display: 'grid', gap: 6 }}>
+            <label style={{ fontSize: 12, opacity: 0.8 }}>Look at object</label>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <select
+                value={lookAtTargetId}
+                onChange={(e) => setLookAtTargetId(e.target.value)}
+                disabled={availableLookAtTargets.length === 0}
+                style={{ flex: 1, minWidth: 0 }}
+              >
+                {availableLookAtTargets.length === 0 && <option value="">(no available 3D objects)</option>}
+                {availableLookAtTargets.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name} ({t.type})
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={lookAtSelectedTarget}
+                disabled={!lookAtTargetId || availableLookAtTargets.length === 0}
+                style={{
+                  padding: '6px 8px',
+                  borderRadius: 6,
+                  border: '1px solid #1b2235',
+                  background: '#0f1630',
+                  color: '#e8ecff',
+                  cursor: 'pointer',
+                  fontSize: 12,
+                }}
+              >
+                Look At
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -623,6 +719,17 @@ export default function Inspector({
         <>
           <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8 }}>gaussians</div>
           <div>{selected.summary.count as number}</div>
+        </>
+      )}
+
+      {isImage && (
+        <>
+          <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8 }}>image</div>
+          <div>{imgWidth ?? '?'} x {imgHeight ?? '?'}</div>
+          <div style={{ marginTop: 6, fontSize: 12, opacity: 0.8 }}>channels</div>
+          <div>{imgChannels ?? '?'}</div>
+          <div style={{ marginTop: 6, fontSize: 12, opacity: 0.8 }}>mime</div>
+          <div style={{ fontFamily: 'monospace', fontSize: 12 }}>{imgMime ?? '?'}</div>
         </>
       )}
 

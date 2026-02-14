@@ -13,8 +13,9 @@ import uvicorn
 
 from .client import BegiraClient
 from .conventions import CoordinateConvention
-from .elements import CameraElement, GaussianSplatElement, PointCloudElement
-from .handles import CameraHandle, GaussianHandle, PointCloudHandle
+from .elements import CameraElement, GaussianSplatElement, ImageElement, PointCloudElement
+from .handles import CameraHandle, GaussianHandle, ImageHandle, PointCloudHandle
+from .image_logging import encode_image_payload
 from .registry import REGISTRY
 from .server import create_app
 
@@ -101,6 +102,27 @@ class BegiraServer:
                 "intrinsicMatrix": [list(row) for row in e.intrinsic_matrix] if e.intrinsic_matrix is not None else None,
                 "visible": bool(e.visible),
                 "deleted": bool(e.deleted),
+            }
+        if isinstance(e, ImageElement):
+            return {
+                "id": e.id,
+                "type": e.type,
+                "name": e.name,
+                "revision": int(e.revision),
+                "width": int(e.width),
+                "height": int(e.height),
+                "channels": int(e.channels),
+                "mimeType": str(e.mime_type),
+                "position": list(e.position),
+                "rotation": list(e.rotation),
+                "visible": bool(e.visible),
+                "deleted": bool(e.deleted),
+                "payloads": {
+                    "image": {
+                        "url": f"/api/elements/{e.id}/payloads/image",
+                        "contentType": str(e.mime_type),
+                    }
+                },
             }
         raise RuntimeError(f"Unsupported element type: {e.type}")
 
@@ -254,6 +276,38 @@ class BegiraServer:
             element_id=element_id,
         )
         return CameraHandle(cam.id, ops=self, element_type="camera")
+
+    def log_image(
+        self,
+        name: str,
+        image: object,
+        *,
+        mime_type: str | None = "image/png",
+        color_order: str = "bgr",
+        width: int | None = None,
+        height: int | None = None,
+        channels: int | None = None,
+        element_id: str | None = None,
+    ) -> ImageHandle:
+        """Log (add/update) an image element."""
+        data, mime, width, height, channels = encode_image_payload(
+            image,
+            mime_type=mime_type,
+            color_order=color_order,
+            width=width,
+            height=height,
+            channels=channels,
+        )
+        img = REGISTRY.upsert_image(
+            name=name,
+            image_bytes=data,
+            mime_type=mime,
+            width=int(width),
+            height=int(height),
+            channels=int(channels),
+            element_id=element_id,
+        )
+        return ImageHandle(img.id, ops=self, element_type="image")
 
     def log_ply(
         self,

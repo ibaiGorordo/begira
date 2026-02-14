@@ -1,4 +1,4 @@
-export type ElementType = 'pointcloud' | 'gaussians' | 'camera'
+export type ElementType = 'pointcloud' | 'gaussians' | 'camera' | 'image'
 
 export type ElementInfo = {
   id: string
@@ -74,6 +74,21 @@ export type CameraElementMeta = {
   visible?: boolean
 }
 
+export type ImageElementMeta = {
+  id: string
+  type: 'image'
+  name: string
+  revision: number
+  width: number
+  height: number
+  channels: number
+  mimeType: string
+  payloads: { image: { url: string; contentType: string } }
+  position?: [number, number, number]
+  rotation?: [number, number, number, number]
+  visible?: boolean
+}
+
 export type Events = {
   globalRevision: number
 }
@@ -130,6 +145,12 @@ export async function fetchGaussianElementMeta(elementId: string): Promise<Gauss
 export async function fetchCameraElementMeta(elementId: string): Promise<CameraElementMeta> {
   const meta = (await fetchElementMeta(elementId)) as CameraElementMeta
   if (meta.type !== 'camera') throw new Error(`Element ${elementId} is not a camera (type=${(meta as any).type})`)
+  return meta
+}
+
+export async function fetchImageElementMeta(elementId: string): Promise<ImageElementMeta> {
+  const meta = (await fetchElementMeta(elementId)) as ImageElementMeta
+  if (meta.type !== 'image') throw new Error(`Element ${elementId} is not an image (type=${(meta as any).type})`)
   return meta
 }
 

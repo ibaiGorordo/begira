@@ -10,6 +10,7 @@ ElementType = Literal[
     "pointcloud",
     "gaussians",
     "camera",
+    "image",
     # Future:
     # "lines3d",
     # "boxes3d",
@@ -74,3 +75,13 @@ class CameraElement(ElementBase):
     width: int | None = None
     height: int | None = None
     intrinsic_matrix: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]] | None = None
+
+
+@dataclass(frozen=True)
+class ImageElement(ElementBase):
+    type: Literal["image"]
+    image_bytes: bytes
+    mime_type: str
+    width: int
+    height: int
+    channels: int

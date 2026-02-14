@@ -5,7 +5,8 @@ from typing import Any
 import numpy as np
 
 from .conventions import CoordinateConvention
-from .handles import CameraHandle, GaussianHandle, PointCloudHandle
+from .handles import CameraHandle, GaussianHandle, ImageHandle, PointCloudHandle
+from .image_logging import encode_image_payload
 
 
 def _normalize_intrinsic_matrix(
@@ -265,6 +266,75 @@ class BegiraClient:
 
             return PointCloudHandle(eid, ops=self, element_type="pointcloud")
 
+    def log_image(
+        self,
+        name: str,
+        image: object,
+        *,
+        mime_type: str | None = "image/png",
+        color_order: str = "bgr",
+        width: int | None = None,
+        height: int | None = None,
+        channels: int | None = None,
+        element_id: str | None = None,
+        timeout_s: float = 60.0,
+    ) -> ImageHandle:
+        """Upload (add/update) an image element.
+
+        - `image` can be an OpenCV-style `numpy.ndarray` or a PIL image object.
+        - `image` can also be pre-encoded bytes (PNG/JPEG/WEBP) when
+          `width/height/channels` are provided.
+        - For numpy color images, `color_order` controls channel interpretation.
+        """
+        data, mime, width, height, channels = encode_image_payload(
+            image,
+            mime_type=mime_type,
+            color_order=color_order,
+            width=width,
+            height=height,
+            channels=channels,
+        )
+
+        import httpx
+
+        with httpx.Client(base_url=self.base_url, timeout=timeout_s) as client:
+            req = {
+                "name": name,
+                "elementId": element_id,
+                "width": int(width),
+                "height": int(height),
+                "channels": int(channels),
+                "mimeType": str(mime),
+            }
+            res = client.post("/api/elements/images/upload", json=req)
+            if res.status_code >= 400:
+                raise RuntimeError(f"Upload request failed: {res.status_code} {res.text}")
+
+            resp = res.json()
+            eid = str(resp.get("id"))
+            upload_url = str(resp.get("uploadUrl"))
+            if not eid or not upload_url:
+                raise RuntimeError(f"Upload request returned invalid response: {resp}")
+
+            put = client.put(
+                upload_url,
+                params={
+                    "name": name,
+                    "mimeType": str(mime),
+                    "width": str(int(width)),
+                    "height": str(int(height)),
+                    "channels": str(int(channels)),
+                },
+                content=data,
+                headers={"content-type": "application/octet-stream"},
+            )
+            if put.status_code >= 400:
+                raise RuntimeError(f"Image upload failed: {put.status_code} {put.text}")
+
+            out = put.json()
+            out_id = str(out.get("id") or eid)
+            return ImageHandle(out_id, ops=self, element_type="image")
+
     def log_gaussians(
         self,
         name: str,
@@ -352,4 +422,3 @@ class BegiraClient:
             out = put.json()
             out_id = str(out.get("id") or eid)
             return GaussianHandle(out_id, ops=self, element_type="gaussians")
-

@@ -5,6 +5,7 @@ Minimal 3D viewer with a Python API and a React/Three.js frontend.
 
 ## Features
 - Point clouds and Gaussian splats with orbit controls
+- Image logging (OpenCV/Pillow) with 2D image view
 - Color modes: logged, solid, height, depth
 - Selectable colormaps for height/depth
 - LOD for gaussians and focus on selection
@@ -62,6 +63,7 @@ npm run dev
 ```
 
 Open the Vite URL (usually http://localhost:5173).
+Use the top-right view buttons (`3D`, `Images`, `Split`) to switch between 3D and 2D image views.
 
 ## Packaging the frontend
 
@@ -96,6 +98,7 @@ import begira
 viewer = begira.run(port=8000)
 
 points = viewer.log_points("points", positions, colors)
+image = viewer.log_image("frame", bgr_image)  # OpenCV ndarray (H,W,3)
 camera = viewer.log_camera(
     "main_camera",
     position=(2.0, 1.5, 3.0),
@@ -115,4 +118,5 @@ print(points.rotation_matrix)
 print(points.count)         # pointcloud/gaussians
 print(points.kind, points.visible, points.deleted, points.bounds)
 print(camera.fov, camera.near, camera.far)
+print(image.width, image.height, image.channels, image.mime_type)
 ```

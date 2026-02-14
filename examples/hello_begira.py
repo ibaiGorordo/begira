@@ -2,7 +2,7 @@ import time
 from pathlib import Path
 
 import numpy as np
-
+import cv2
 import begira
 from begira.ply import load_ply_gaussians
 
@@ -20,14 +20,14 @@ def main() -> None:
         gs.colors_rgb8,
         point_size=0.025,
     )
+    img = cv2.imread(str(assets_dir / "tokyo.jpg"))
+    img_obj = client.log_image("image", img)
 
     main_camera = client.log_camera(
         "main_camera",
         fov=60.0,
-        near=0.01,
-        far=1000.0,
     )
-    main_camera.look_at(gs_obj, 1.5)
+    main_camera.look_at(gs_obj, 6)
 
     try:
         while True:
