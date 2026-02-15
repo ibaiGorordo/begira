@@ -5,8 +5,8 @@ from pathlib import Path
 import numpy as np
 
 import begira
-from begira.ply import load_ply_pointcloud
-from begira.registry import REGISTRY
+from begira.io.ply import load_ply_pointcloud
+from begira.core.registry import REGISTRY
 
 
 def test_log_points_accepts_pointcloud_object_and_uses_colors() -> None:

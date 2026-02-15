@@ -1,5 +1,5 @@
 import { useMemo, useRef, type PointerEvent as ReactPointerEvent } from 'react'
-import type { TimelineAxis, TimelineKind } from './api'
+import type { TimelineAxis, TimelineKind } from '../shared/api'
 
 type TimelineBounds = {
   min: number

@@ -4,8 +4,8 @@ import uuid
 
 import numpy as np
 
-from begira.registry import REGISTRY
-from begira.server import create_app
+from begira.core.registry import REGISTRY
+from begira.runtime.app import create_app
 
 
 def _skip(msg: str) -> None:  # pragma: no cover

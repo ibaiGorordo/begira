@@ -4,7 +4,7 @@ import { SparkRenderer, SplatMesh, dyno, type SplatTransformer } from '@sparkjsd
 import { COLORMAPS, DEFAULT_DEPTH_COLORMAP, DEFAULT_HEIGHT_COLORMAP, sampleColormap, type ColormapDef, type ColormapId } from './colormaps'
 import { useThree, useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
-import type { SampleQuery } from './api'
+import type { SampleQuery } from '../shared/api'
 
 export type GaussianSplatItemProps = {
   elementId: string

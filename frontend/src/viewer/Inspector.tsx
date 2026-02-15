@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
-import type { ElementInfo, SampleQuery } from './api'
+import type { ElementInfo, SampleQuery } from '../shared/api'
 import {
   deleteCameraAnimation,
   fetchPointCloudElementMeta,
@@ -14,7 +14,7 @@ import {
   updateElementMeta,
   deleteElement,
   type CameraAnimationTrack,
-} from './api'
+} from '../shared/api'
 import { COLORMAPS, DEFAULT_DEPTH_COLORMAP, DEFAULT_HEIGHT_COLORMAP, type ColormapId } from './colormaps'
 
 type Props = {

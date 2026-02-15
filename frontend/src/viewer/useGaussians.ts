@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { fetchBinaryPayload, fetchGaussianElementMeta, type GaussianSplatElementMeta, type SampleQuery } from './api'
+import { fetchBinaryPayload, fetchGaussianElementMeta, type GaussianSplatElementMeta, type SampleQuery } from '../shared/api'
 import { decodeGaussians, DecodedGaussians } from './gaussiansGeometry'
 
 export type UseGaussiansState =

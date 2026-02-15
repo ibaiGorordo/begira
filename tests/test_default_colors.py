@@ -1,6 +1,6 @@
 import numpy as np
 
-from begira.registry import InMemoryRegistry
+from begira.core.registry import InMemoryRegistry
 
 
 def test_default_colors_are_deterministic_by_creation_order() -> None:

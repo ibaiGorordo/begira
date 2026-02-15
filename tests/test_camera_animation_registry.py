@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from begira.animation import CameraAnimationTrack, pose_matrix
-from begira.registry import InMemoryRegistry
+from begira.core.animation import CameraAnimationTrack, pose_matrix
+from begira.core.registry import InMemoryRegistry
 
 
 def _single_point(offset: float = 0.0) -> np.ndarray:

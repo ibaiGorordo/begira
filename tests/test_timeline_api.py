@@ -15,8 +15,8 @@ def _skip(msg: str) -> None:  # pragma: no cover
 
 
 def test_timeline_api_queries_and_birth() -> None:
-    from begira.server import create_app
-    from begira.registry import REGISTRY
+    from begira.runtime.app import create_app
+    from begira.core.registry import REGISTRY
 
     try:
         from fastapi.testclient import TestClient
@@ -61,8 +61,8 @@ def test_timeline_api_queries_and_birth() -> None:
 
 
 def test_api_exposes_state_and_data_revisions() -> None:
-    from begira.server import create_app
-    from begira.registry import REGISTRY
+    from begira.runtime.app import create_app
+    from begira.core.registry import REGISTRY
 
     try:
         from fastapi.testclient import TestClient

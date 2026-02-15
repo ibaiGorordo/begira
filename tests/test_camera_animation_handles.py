@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from begira.animation import pose_matrix
-from begira.runner import BegiraServer
+from begira.core.animation import pose_matrix
+from begira.runtime.server import BegiraServer
 
 
 def _relative_transform(

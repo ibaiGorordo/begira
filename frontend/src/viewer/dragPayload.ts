@@ -1,4 +1,4 @@
-import type { ElementInfo } from './api'
+import type { ElementInfo } from '../shared/api'
 
 export const HIERARCHY_DRAG_MIME = 'application/x-begira-hierarchy-item'
 

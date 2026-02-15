@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import type { ElementInfo } from './api'
+import type { ElementInfo } from '../shared/api'
 
 type Props = {
   images: ElementInfo[]

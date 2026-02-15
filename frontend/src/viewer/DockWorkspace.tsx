@@ -1,7 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { Actions, DockLocation, Layout, Model, type IJsonModel, type Node, type TabNode, type TabSetNode } from 'flexlayout-react'
 import PointCloudCanvas from '../features/view3d/canvas/PointCloudCanvas'
-import { appendSampleToUrl, type ElementInfo, type SampleQuery } from './api'
+import { appendSampleToUrl, type ElementInfo, type SampleQuery } from '../shared/api'
 
 const ROOT_ROW_ID = 'workspace-root-row'
 const THREE_D_TABSET_ID = 'workspace-tabset-3d'

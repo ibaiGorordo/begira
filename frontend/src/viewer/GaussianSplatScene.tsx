@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import type { SampleQuery } from './api'
+import type { SampleQuery } from '../shared/api'
 import GaussianSplatItem from './GaussianSplatItem'
 
 export default function GaussianSplatScene({

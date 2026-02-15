@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { fetchBinaryPayload, fetchPointCloudElementMeta, type PointCloudElementMeta, type SampleQuery } from './api'
+import { fetchBinaryPayload, fetchPointCloudElementMeta, type PointCloudElementMeta, type SampleQuery } from '../shared/api'
 import { decodePointCloud, DecodedPointCloud } from './pointcloudGeometry'
 
 export type UsePointCloudState =

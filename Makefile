@@ -23,7 +23,7 @@ run: web-build
 	python -c "import begira; begira.run()"
 
 dev-backend:
-	uvicorn begira.server:app --reload --host 127.0.0.1 --port 8000
+	uvicorn begira.runtime.app:app --reload --host 127.0.0.1 --port 8000
 
 dev-frontend:
 	cd frontend && npm run dev

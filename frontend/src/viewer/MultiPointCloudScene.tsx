@@ -6,7 +6,7 @@ import { getCircleSpriteTexture } from './spriteCircle'
 import { usePointCloud } from './usePointCloud'
 import { useThree } from '@react-three/fiber'
 import { DEFAULT_DEPTH_COLORMAP, DEFAULT_HEIGHT_COLORMAP, buildColormapLUT, sampleColormapLUT, type ColormapId } from './colormaps'
-import type { SampleQuery } from './api'
+import type { SampleQuery } from '../shared/api'
 
 export type PointCloudRenderMode = 'fast' | 'circles' | 'quality'
 

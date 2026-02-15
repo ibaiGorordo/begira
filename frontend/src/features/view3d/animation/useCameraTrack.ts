@@ -5,7 +5,7 @@ import {
   fetchCameraAnimationTrajectory,
   type CameraAnimationTrack,
   type CameraAnimationTrajectory,
-} from '../../../viewer/api'
+} from '../../../shared/api'
 
 type State = {
   track: CameraAnimationTrack | null

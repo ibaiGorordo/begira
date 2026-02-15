@@ -17,7 +17,7 @@ def test_run_auto_attaches_to_existing_server() -> None:
     attached = begira.run(host=server.host, port=server.port, open_browser=False)
 
     # Attached instance should be a client (not a second server process).
-    from begira.client import BegiraClient
+    from begira.sdk.client import BegiraClient
 
     assert isinstance(attached, BegiraClient)
     assert attached.base_url.rstrip("/") == f"http://{server.host}:{server.port}"
@@ -38,7 +38,7 @@ def test_run_new_server_forces_start_even_if_env_url_is_set() -> None:
     finally:
         os.environ.pop("BEGIRA_URL", None)
 
-    from begira.runner import BegiraServer
+    from begira.runtime.server import BegiraServer
 
     assert isinstance(s2, BegiraServer)
     assert (s2.host, s2.port) != (s1.host, s1.port)

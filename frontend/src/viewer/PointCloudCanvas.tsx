@@ -39,7 +39,7 @@ import {
   type CameraAnimationTrajectory,
   type PutCameraAnimationRequest,
   type SampleQuery,
-} from './api'
+} from '../shared/api'
 import { usePageActivity } from './usePageActivity'
 
 type Bounds3 = { min: THREE.Vector3; max: THREE.Vector3 }

@@ -7,14 +7,12 @@
 - `src/begira/runtime/`: server runner and frontend static mounting.
 - `src/begira/io/`: file/image loaders and payload encoders.
 
-Compatibility: legacy module paths in `src/begira/*.py` re-export the new package layout.
-
 ## Frontend
 - `frontend/src/app/`: app shell, app-level state helpers, runtime shared state.
 - `frontend/src/features/`: feature-organized modules (`hierarchy`, `inspector`, `timeline`, `workspace`, `view3d`).
 - `frontend/src/shared/api/`: typed API contracts and request functions.
 - `frontend/src/shared/utils/`: shared utilities.
-- `frontend/src/viewer/`: compatibility layer for prior import paths.
+- `frontend/src/viewer/`: viewer rendering modules.
 
 ## Runtime Data Flow
 1. SDK writes element payload/meta to API.
@@ -22,7 +20,7 @@ Compatibility: legacy module paths in `src/begira/*.py` re-export the new packag
 3. Viewer polls events + timeline + element/meta payloads.
 4. Viewer renders 3D/2D views through workspace layout.
 
-## Compatibility Guarantees
+## Stability Guarantees
 - `begira.run`, `BegiraClient`, and handle classes remain stable.
 - Existing `/api/*` endpoints remain unchanged.
 - Existing frontend runtime request/response shapes remain unchanged.

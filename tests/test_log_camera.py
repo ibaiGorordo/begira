@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from begira.registry import REGISTRY
-from begira.runner import BegiraServer
+from begira.core.registry import REGISTRY
+from begira.runtime.server import BegiraServer
 
 
 def test_log_camera_from_server_object() -> None:

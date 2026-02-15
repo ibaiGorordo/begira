@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { PointCloudElementMeta } from './api'
+import { PointCloudElementMeta } from '../shared/api'
 
 export type DecodedPointCloud = {
   geometry: THREE.BufferGeometry

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { fetchCameraElementMeta, type CameraElementMeta, type SampleQuery } from './api'
+import { fetchCameraElementMeta, type CameraElementMeta, type SampleQuery } from '../shared/api'
 
 export type UseCameraState =
   | { status: 'loading' }

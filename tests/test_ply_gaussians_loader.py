@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from begira.ply import load_ply_gaussians
+from begira.io.ply import load_ply_gaussians
 
 
 def test_load_ply_gaussians_smoke() -> None:

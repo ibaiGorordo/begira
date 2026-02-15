@@ -22,7 +22,7 @@ _PNG_1X1_RGBA = (
 
 
 def test_image_api_upload_and_payload() -> None:
-    from begira.server import create_app
+    from begira.runtime.app import create_app
 
     try:
         from fastapi.testclient import TestClient

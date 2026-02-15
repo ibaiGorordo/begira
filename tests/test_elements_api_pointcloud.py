@@ -13,8 +13,8 @@ def _skip(msg: str) -> None:  # pragma: no cover
 
 
 def test_elements_api_lists_and_serves_pointcloud_payload() -> None:
-    from begira.server import create_app
-    from begira.registry import REGISTRY
+    from begira.runtime.app import create_app
+    from begira.core.registry import REGISTRY
 
     try:
         from fastapi.testclient import TestClient

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from begira.registry import InMemoryRegistry
+from begira.core.registry import InMemoryRegistry
 
 
 def _tiny_positions(offset: float = 0.0) -> np.ndarray:

@@ -17,12 +17,11 @@ Minimal 3D viewer with a Python API and a React/Three.js frontend.
   - `src/begira/sdk/` → Python client + handles
   - `src/begira/runtime/` → app/server/web mounting
   - `src/begira/io/` → image + ply loaders/encoders
-  - legacy paths in `src/begira/*.py` are compatibility shims
 - `frontend/` → web viewer (Vite + React + three)
   - `frontend/src/app/` → app shell + app-level runtime state
   - `frontend/src/features/` → hierarchy/inspector/timeline/workspace/3d-view features
   - `frontend/src/shared/api/` → API types and fetch clients
-  - `frontend/src/viewer/` → compatibility shims + legacy entry points
+  - `frontend/src/viewer/` → viewer rendering modules
 - `examples/` → small runnable scripts
 
 ## Quickstart
@@ -63,7 +62,7 @@ This writes the build directly into:
 Backend:
 
 ```bash
-uvicorn begira.server:app --reload --host 127.0.0.1 --port 8000
+uvicorn begira.runtime.app:app --reload --host 127.0.0.1 --port 8000
 ```
 
 Frontend:

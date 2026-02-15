@@ -1,4 +1,4 @@
-import type { ElementInfo } from './api'
+import type { ElementInfo } from '../shared/api'
 import { buildHierarchyElementDragPayload, HIERARCHY_DRAG_MIME } from './dragPayload'
 
 export type HierarchyViewInfo = {

@@ -14,7 +14,7 @@ def _skip(msg: str) -> None:  # pragma: no cover
 def test_root_serves_packaged_frontend_index_html() -> None:
     """The root URL should serve the packaged Vite index.html."""
 
-    from begira.server import create_app
+    from begira.runtime.app import create_app
 
     try:
         from fastapi.testclient import TestClient

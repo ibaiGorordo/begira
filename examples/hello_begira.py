@@ -2,7 +2,7 @@ import time
 from pathlib import Path
 
 import begira
-from begira.ply import load_ply_gaussians
+from begira.io.ply import load_ply_gaussians
 
 
 def main() -> None:

@@ -2,7 +2,7 @@ import { Html } from '@react-three/drei'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { CAMERA_GIZMO_OVERLAY_LAYER } from './CameraScene'
-import type { CameraAnimationTrack, CameraAnimationTrajectory } from './api'
+import type { CameraAnimationTrack, CameraAnimationTrajectory } from '../shared/api'
 
 type Props = {
   track: CameraAnimationTrack | null

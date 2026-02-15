@@ -18,10 +18,10 @@
 - `src/begira/ply.py` -> `src/begira/io/ply.py`
 - `src/begira/image_logging.py` -> `src/begira/io/image.py`
 
-Compatibility wrappers remain at all legacy module paths.
+Legacy module path wrappers were removed as part of cleanup.
 
 ## Frontend Additions/Reorg
-- `frontend/src/App.tsx` -> `frontend/src/app/AppShell.tsx` (with compatibility entrypoint in `App.tsx`)
+- `frontend/src/App.tsx` -> `frontend/src/app/AppShell.tsx`
 - Added feature folders:
   - `frontend/src/features/hierarchy/`
   - `frontend/src/features/inspector/`
@@ -35,7 +35,7 @@ Compatibility wrappers remain at all legacy module paths.
   - `frontend/src/shared/api/timeline.ts`
   - `frontend/src/shared/api/animation.ts`
   - `frontend/src/shared/api/viewer.ts`
-- `frontend/src/viewer/api.ts` now re-exports from `frontend/src/shared/api/`.
+- API calls live under `frontend/src/shared/api/`.
 
 ## Hygiene
 - Removed accidental root-level Node package files:

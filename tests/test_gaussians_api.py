@@ -1,8 +1,8 @@
 from __future__ import annotations
 import numpy as np
 import httpx
-from begira.client import BegiraClient
-from begira.runner import run
+from begira.sdk.client import BegiraClient
+from begira.runtime.server import run
 
 def test_log_gaussians_api() -> None:
     # Start a server in a thread

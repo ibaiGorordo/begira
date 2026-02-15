@@ -3,8 +3,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from begira.registry import REGISTRY
-from begira.runner import BegiraServer
+from begira.core.registry import REGISTRY
+from begira.runtime.server import BegiraServer
 
 
 def test_logged_handles_support_transform_visibility_and_delete() -> None:

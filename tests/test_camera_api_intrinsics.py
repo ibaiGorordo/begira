@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from begira.server import create_app
+from begira.runtime.app import create_app
 
 
 def _skip(msg: str) -> None:  # pragma: no cover

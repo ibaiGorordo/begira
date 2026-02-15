@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from begira.ply import load_ply, load_ply_pointcloud
+from begira.io.ply import load_ply, load_ply_pointcloud
 
 
 @pytest.mark.parametrize(

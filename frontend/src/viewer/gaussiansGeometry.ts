@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { GaussianSplatElementMeta } from './api'
+import { GaussianSplatElementMeta } from '../shared/api'
 
 export type DecodedGaussians = {
   geometry: THREE.BufferGeometry

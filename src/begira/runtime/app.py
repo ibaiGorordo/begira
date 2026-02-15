@@ -14,5 +14,5 @@ def create_app() -> FastAPI:
     return app
 
 
-# Convenience for uvicorn: `uvicorn begira.server:app`
+# Convenience for uvicorn: `uvicorn begira.runtime.app:app`
 app = create_app()

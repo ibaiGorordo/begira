@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from begira.runner import BegiraServer
+from begira.runtime.server import BegiraServer
 
 
 def test_static_payload_temporal_transform_via_handle() -> None:

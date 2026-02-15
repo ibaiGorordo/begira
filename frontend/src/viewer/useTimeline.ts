@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { fetchTimelineInfo, type SampleQuery, type TimelineAxis, type TimelineInfo } from './api'
+import { fetchTimelineInfo, type SampleQuery, type TimelineAxis, type TimelineInfo } from '../shared/api'
 
 type AxisInfo = TimelineInfo['axes'][number]
 

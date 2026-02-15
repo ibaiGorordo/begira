@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from begira.registry import REGISTRY
-from begira.runner import BegiraServer
+from begira.core.registry import REGISTRY
+from begira.runtime.server import BegiraServer
 
 
 def _skip(msg: str) -> None:  # pragma: no cover
