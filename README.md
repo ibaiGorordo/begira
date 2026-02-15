@@ -32,6 +32,15 @@ Install the Python package (editable is fine for dev):
 python -m pip install -e .
 ```
 
+Install directly from Git:
+
+```bash
+python -m pip install "begira @ git+https://github.com/ibaiGorordo/begira.git"
+```
+
+This works without local npm steps as long as `src/begira/_frontend/dist/` is
+present in the repository (prebuilt frontend bundle tracked in git).
+
 Run the example:
 
 ```bash

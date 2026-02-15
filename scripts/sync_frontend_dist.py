@@ -7,6 +7,8 @@ Historically this script built into `frontend/dist` and then copied into
 
 The frontend build is now configured to write directly into the Python package
 (`src/begira/_frontend/dist`), so there is nothing to sync/copy anymore.
+For Git installs (`pip install begira@git+...`) this built directory should be
+committed so users do not need npm installed locally.
 
 Usage:
   python scripts/sync_frontend_dist.py

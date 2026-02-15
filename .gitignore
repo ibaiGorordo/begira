@@ -15,6 +15,11 @@ dist/
 *.egg-info/
 .eggs/
 
+# Keep packaged frontend bundle tracked so `pip install ...@git+...` works
+# without requiring local npm build steps.
+!src/begira/_frontend/dist/
+!src/begira/_frontend/dist/**
+
 # Test / typecheck
 .pytest_cache/
 .mypy_cache/

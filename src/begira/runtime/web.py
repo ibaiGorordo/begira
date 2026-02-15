@@ -28,8 +28,8 @@ def mount_frontend(app: FastAPI) -> None:
 
     We support two locations:
 
-    1) Installed wheel: packaged assets under `begira/_frontend/dist/`.
-    2) Editable/source checkout: `frontend/dist/` in the repository.
+    1) Installed wheel/editable package: assets under `begira/_frontend/dist/`.
+    2) Legacy editable/source checkout fallback: `frontend/dist/` in the repository.
 
     In both cases this serves the *full* Vite build output (no fallback UI).
     """
@@ -48,7 +48,7 @@ def mount_frontend(app: FastAPI) -> None:
     except ModuleNotFoundError:
         pass
 
-    # 2) Editable/source: repo frontend/dist.
+    # 2) Legacy editable/source fallback: repo frontend/dist.
     repo_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
     if (repo_dist / "index.html").exists():
         _mount_dist(app, dist_root=repo_dist)
