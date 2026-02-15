@@ -17,6 +17,8 @@ export type BoxVisual = {
   size?: Vec3
   color?: Vec3
   visible?: boolean
+  interactive?: boolean
+  variant?: 'default' | 'boundary'
 }
 
 export type EllipsoidVisual = {
@@ -55,17 +57,20 @@ function BoxItem({
 }) {
   const groupRef = useRef<THREE.Group | null>(null)
   const lastLocalPoseRef = useRef<string | null>(null)
+  const interactive = box.interactive !== false
+  const isBoundary = box.variant === 'boundary'
   const color = useMemo(
-    () => colorFromTuple(box.color, selected ? '#9dd1ff' : '#8ec5f7'),
-    [box.color, selected],
+    () => colorFromTuple(box.color, isBoundary ? '#8ec5f7' : selected ? '#9dd1ff' : '#8ec5f7'),
+    [box.color, isBoundary, selected],
   )
 
   useEffect(() => {
+    if (!interactive) return
     if (!onRegisterObject) return
     if (!groupRef.current) return
     onRegisterObject(box.id, groupRef.current)
     return () => onRegisterObject(box.id, null)
-  }, [box.id, onRegisterObject])
+  }, [box.id, interactive, onRegisterObject])
 
   useEffect(() => {
     if (!groupRef.current) return
@@ -98,17 +103,26 @@ function BoxItem({
     <group
       ref={groupRef}
       onClick={(e) => {
+        if (!interactive) return
         e.stopPropagation()
         onSelect(box.id)
         if (e.detail === 2) onFocus(box.id)
       }}
       onDoubleClick={(e) => {
+        if (!interactive) return
         e.stopPropagation()
         onFocus(box.id)
       }}
     >
       <lineSegments geometry={UNIT_BOX_EDGES}>
-        <lineBasicMaterial color={color} toneMapped={false} />
+        <lineBasicMaterial
+          color={color}
+          toneMapped={false}
+          transparent={isBoundary}
+          opacity={isBoundary ? 0.95 : 1.0}
+          depthTest={!isBoundary}
+          depthWrite={!isBoundary}
+        />
       </lineSegments>
     </group>
   )
@@ -247,29 +261,26 @@ export function EllipsoidScene({
 }
 
 export function WireBoxOverlayScene({ boxes }: { boxes: WireBoxOverlay[] }) {
+  const inheritedBoxes: BoxVisual[] = boxes.map((box) => ({
+    id: box.id,
+    position: box.center,
+    size: box.size,
+    color: box.color,
+    interactive: false,
+    variant: 'boundary',
+    visible: true,
+  }))
+
   return (
-    <>
-      {boxes.map((box) => (
-        <group
-          key={box.id}
-          position={box.center}
-          scale={[
-            Math.max(1e-6, box.size[0]),
-            Math.max(1e-6, box.size[1]),
-            Math.max(1e-6, box.size[2]),
-          ]}
-        >
-          <lineSegments geometry={UNIT_BOX_EDGES}>
-            <lineBasicMaterial
-              color={colorFromTuple(box.color, '#8ec5f7')}
-              transparent
-              opacity={0.95}
-              depthTest={false}
-              toneMapped={false}
-            />
-          </lineSegments>
-        </group>
-      ))}
-    </>
+    <BoxScene
+      boxes={inheritedBoxes}
+      selectedId={null}
+      onSelect={() => {
+        // non-interactive special case
+      }}
+      onFocus={() => {
+        // non-interactive special case
+      }}
+    />
   )
 }

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
+  createCamera,
   fetchElementMeta,
   fetchElements,
   fetchEvents,
@@ -7,16 +8,18 @@ import {
   deleteElement,
   resetProject,
   type ElementInfo,
+  type SampleQuery,
 } from './viewer/api'
 import Inspector from './viewer/Inspector'
 import Hierarchy, { type HierarchyProps, type HierarchyViewInfo } from './viewer/Hierarchy'
-import DockWorkspace, { type DockImageView, type DockWorkspaceHandle } from './viewer/DockWorkspace'
+import DockWorkspace, { type DockImageView, type DockThreeDView, type DockWorkspaceHandle } from './viewer/DockWorkspace'
 import TimelineBar from './viewer/TimelineBar'
 import { useTimeline } from './viewer/useTimeline'
 import { usePageActivity } from './viewer/usePageActivity'
 import { HIERARCHY_DRAG_MIME, parseHierarchyElementDragPayload } from './viewer/dragPayload'
 
 const MAIN_3D_VIEW_ID = 'view-3d-main'
+const EXTRA_3D_VIEW_PREFIX = 'view-3d-'
 const IMAGE_VIEW_PREFIX = 'view-image-'
 const CAMERA_VIEW_PREFIX = 'view-camera-'
 
@@ -38,6 +41,10 @@ function cameraIdFromViewId(viewId: string): string | null {
   return viewId.slice(CAMERA_VIEW_PREFIX.length)
 }
 
+function isExtraThreeDViewId(viewId: string): boolean {
+  return viewId.startsWith(EXTRA_3D_VIEW_PREFIX) && viewId !== MAIN_3D_VIEW_ID
+}
+
 function centerFromBounds(bounds?: { min: [number, number, number]; max: [number, number, number] }): [number, number, number] | null {
   if (!bounds) return null
   return [
@@ -49,6 +56,14 @@ function centerFromBounds(bounds?: { min: [number, number, number]; max: [number
 
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v))
+}
+
+type ViewCameraSnapshot = {
+  position: [number, number, number]
+  rotation: [number, number, number, number]
+  fov?: number
+  near?: number
+  far?: number
 }
 
 function CollapseHandle({
@@ -125,6 +140,11 @@ export default function App() {
   const [activeCameraId, setActiveCameraId] = useState<string | null>(null)
   const [transformMode, setTransformMode] = useState<'translate' | 'rotate' | 'animate'>('translate')
   const lastRev = useRef<number>(-1)
+  const timelineSampleRef = useRef<SampleQuery | undefined>(undefined)
+  const sampleFetchAliveRef = useRef(true)
+  const sampleFetchRunningRef = useRef(false)
+  const sampleFetchQueuedTokenRef = useRef(0)
+  const sampleFetchQueuedSampleRef = useRef<SampleQuery | undefined>(undefined)
   const lastOpenCameraViewSeq = useRef<number>(0)
   const didInitFocus = useRef(false)
   const orderRef = useRef<Map<string, number>>(new Map())
@@ -138,14 +158,18 @@ export default function App() {
   const [leftWidth, setLeftWidth] = useState(300)
   const [rightWidth, setRightWidth] = useState(300)
   const [threeDViewVisible, setThreeDViewVisible] = useState(true)
+  const [extraThreeDViewOrder, setExtraThreeDViewOrder] = useState<string[]>([])
+  const [extraThreeDViewState, setExtraThreeDViewState] = useState<Record<string, { visible: boolean; deleted: boolean; name: string; initialCamera: ViewCameraSnapshot | null }>>({})
   const [imageViewOrder, setImageViewOrder] = useState<string[]>([])
   const [imageViewState, setImageViewState] = useState<Record<string, { visible: boolean; deleted: boolean }>>({})
   const [cameraViewOrder, setCameraViewOrder] = useState<string[]>([])
   const [cameraViewState, setCameraViewState] = useState<Record<string, { visible: boolean; deleted: boolean }>>({})
-  const timeline = useTimeline({ enabled: pageActive })
+  const timeline = useTimeline({ enabled: true })
 
   const pointclouds = useMemo(() => (elements ?? []).filter((e) => e.type === 'pointcloud'), [elements])
   const gaussians = useMemo(() => (elements ?? []).filter((e) => e.type === 'gaussians'), [elements])
+  const boxes = useMemo(() => (elements ?? []).filter((e) => e.type === 'box3d'), [elements])
+  const ellipsoids = useMemo(() => (elements ?? []).filter((e) => e.type === 'ellipsoid3d'), [elements])
   const cameras = useMemo(() => (elements ?? []).filter((e) => e.type === 'camera'), [elements])
   const images = useMemo(() => (elements ?? []).filter((e) => e.type === 'image'), [elements])
   const camerasById = useMemo(() => new Map(cameras.map((cam) => [cam.id, cam])), [cameras])
@@ -251,6 +275,35 @@ export default function App() {
     return out
   }, [cameraViewOrder, cameraViewState, camerasById])
 
+  const extraThreeDViews = useMemo(() => {
+    const out: Array<{ id: string; name: string; visible: boolean; deleted: boolean; initialCamera: ViewCameraSnapshot | null }> = []
+    for (const viewId of extraThreeDViewOrder) {
+      const state = extraThreeDViewState[viewId]
+      if (!state) continue
+      out.push({
+        id: viewId,
+        name: state.name,
+        visible: state.visible,
+        deleted: state.deleted,
+        initialCamera: state.initialCamera ?? null,
+      })
+    }
+    return out
+  }, [extraThreeDViewOrder, extraThreeDViewState])
+
+  const dockThreeDViews = useMemo<DockThreeDView[]>(
+    () =>
+      extraThreeDViews
+        .filter((v) => !v.deleted && v.visible)
+        .map((v) => ({
+          id: v.id,
+          name: v.name,
+          visible: true,
+          initialCamera: v.initialCamera ?? null,
+        })),
+    [extraThreeDViews],
+  )
+
   const dockCameraViews = useMemo(
     () =>
       cameraViews
@@ -276,6 +329,17 @@ export default function App() {
         canReorder: false,
         elementIds: threeDElementIds,
       },
+      ...extraThreeDViews
+        .filter((v) => !v.deleted)
+        .map((v) => ({
+          id: v.id,
+          name: v.name,
+          kind: '3d' as const,
+          visible: v.visible,
+          canDelete: true,
+          canReorder: false,
+          elementIds: threeDElementIds,
+        })),
       ...imageViews
         .filter((v) => !v.deleted)
         .map((v) => ({
@@ -299,7 +363,7 @@ export default function App() {
           elementIds: [v.cameraId],
         })),
     ]
-  }, [cameraViews, elements, imageViews, threeDViewVisible])
+  }, [cameraViews, elements, extraThreeDViews, imageViews, threeDViewVisible])
 
   const lookAtTargets = useMemo(
     () =>
@@ -342,6 +406,85 @@ export default function App() {
       const cur = prev[cameraId] ?? { visible: false, deleted: false }
       return { ...prev, [cameraId]: { ...cur, ...patch } }
     })
+  }
+
+  const setExtraThreeDViewFlags = (viewId: string, patch: Partial<{ visible: boolean; deleted: boolean; name: string; initialCamera: ViewCameraSnapshot | null }>) => {
+    setExtraThreeDViewState((prev) => {
+      const cur = prev[viewId]
+      if (!cur) return prev
+      return { ...prev, [viewId]: { ...cur, ...patch } }
+    })
+  }
+
+  const getCurrentViewSnapshot = (): ViewCameraSnapshot | null => {
+    try {
+      const anyWin = window as any
+      const cam = anyWin.__begira_view_camera as
+        | {
+            position?: [number, number, number]
+            rotation?: [number, number, number, number]
+            fov?: number
+            near?: number
+            far?: number
+          }
+        | undefined
+      if (!cam || !Array.isArray(cam.position) || !Array.isArray(cam.rotation)) return null
+      if (cam.position.length !== 3 || cam.rotation.length !== 4) return null
+      const snapshot: ViewCameraSnapshot = {
+        position: [Number(cam.position[0]), Number(cam.position[1]), Number(cam.position[2])],
+        rotation: [Number(cam.rotation[0]), Number(cam.rotation[1]), Number(cam.rotation[2]), Number(cam.rotation[3])],
+      }
+      if (typeof cam.fov === 'number' && Number.isFinite(cam.fov)) snapshot.fov = cam.fov
+      if (typeof cam.near === 'number' && Number.isFinite(cam.near)) snapshot.near = cam.near
+      if (typeof cam.far === 'number' && Number.isFinite(cam.far)) snapshot.far = cam.far
+      return snapshot
+    } catch {
+      return null
+    }
+  }
+
+  const addThreeDView = () => {
+    const id = `${EXTRA_3D_VIEW_PREFIX}${Math.random().toString(16).slice(2, 10)}`
+    const existingVisibleCount = 1 + extraThreeDViews.filter((v) => !v.deleted).length
+    const name = `3D ${existingVisibleCount + 1}`
+    const initialCamera = getCurrentViewSnapshot()
+    setExtraThreeDViewOrder((prev) => [...prev, id])
+    setExtraThreeDViewState((prev) => ({
+      ...prev,
+      [id]: { visible: true, deleted: false, name, initialCamera },
+    }))
+    setFocusTarget(null)
+    window.setTimeout(() => {
+      workspaceRef.current?.focusThreeDView(id)
+    }, 0)
+  }
+
+  const addCamera = async () => {
+    try {
+      const viewCam = getCurrentViewSnapshot()
+      const nextIndex = cameras.length + 1
+      const req: {
+        name: string
+        position?: [number, number, number]
+        rotation?: [number, number, number, number]
+        fov?: number
+        near?: number
+        far?: number
+      } = { name: `camera_${nextIndex}` }
+      if (viewCam?.position) req.position = viewCam.position
+      if (viewCam?.rotation) req.rotation = viewCam.rotation
+      if (typeof viewCam?.fov === 'number' && Number.isFinite(viewCam.fov)) req.fov = viewCam.fov
+      if (typeof viewCam?.near === 'number' && Number.isFinite(viewCam.near)) req.near = viewCam.near
+      if (typeof viewCam?.far === 'number' && Number.isFinite(viewCam.far)) req.far = viewCam.far
+      const created = await createCamera(req)
+      const items = await fetchElements(timeline.sampleQuery)
+      const ordered = orderElements(items)
+      setElements(ordered)
+      setSelectedId(created.id)
+      setFocusTarget(created.id)
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
   }
 
   const openCameraView = (cameraId: string) => {
@@ -388,34 +531,65 @@ export default function App() {
     return [...items].sort((a, b) => (orderMap.get(a.id) ?? 0) - (orderMap.get(b.id) ?? 0))
   }
 
-  useEffect(() => {
-    if (!pageActive) return
-    let cancelled = false
-    const load = async () => {
-      try {
-        const items = await fetchElements(timeline.sampleQuery)
-        if (cancelled) return
-        const ordered = orderElements(items)
-        setElements(ordered)
-        setSelectedId((cur) => {
-          if (!cur) return cur
-          return ordered.some((e) => e.id === cur) ? cur : null
-        })
+  const applyFetchedElements = (items: ElementInfo[]) => {
+    const ordered = orderElements(items)
+    setElements(ordered)
+    setSelectedId((cur) => {
+      if (!cur) return cur
+      return ordered.some((e) => e.id === cur) ? cur : null
+    })
 
-        if (!didInitFocus.current && ordered.length > 0) {
-          didInitFocus.current = true
-          setFocusTarget(ordered[0].id)
-        }
-      } catch (e: unknown) {
-        if (cancelled) return
-        setError(e instanceof Error ? e.message : String(e))
+    if (!didInitFocus.current && ordered.length > 0) {
+      didInitFocus.current = true
+      setFocusTarget(ordered[0].id)
+    }
+  }
+
+  const pumpSampleFetchQueue = async () => {
+    if (sampleFetchRunningRef.current) return
+    sampleFetchRunningRef.current = true
+    try {
+      while (sampleFetchAliveRef.current) {
+        const token = sampleFetchQueuedTokenRef.current
+        const sample = sampleFetchQueuedSampleRef.current
+        if (token === 0) break
+        sampleFetchQueuedTokenRef.current = 0
+        const items = await fetchElements(sample)
+        if (!sampleFetchAliveRef.current) return
+        applyFetchedElements(items)
+      }
+    } catch (e: unknown) {
+      if (!sampleFetchAliveRef.current) return
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      sampleFetchRunningRef.current = false
+      if (sampleFetchAliveRef.current && sampleFetchQueuedTokenRef.current !== 0) {
+        void pumpSampleFetchQueue()
       }
     }
-    void load()
+  }
+
+  const enqueueSampleFetch = (sample: SampleQuery | undefined) => {
+    sampleFetchQueuedSampleRef.current = sample
+    sampleFetchQueuedTokenRef.current += 1
+    void pumpSampleFetchQueue()
+  }
+
+  useEffect(() => {
+    sampleFetchAliveRef.current = true
     return () => {
-      cancelled = true
+      sampleFetchAliveRef.current = false
+      sampleFetchQueuedTokenRef.current = 0
     }
-  }, [pageActive, timeline.sampleKey])
+  }, [])
+
+  useEffect(() => {
+    timelineSampleRef.current = timeline.sampleQuery
+  }, [timeline.sampleKey])
+
+  useEffect(() => {
+    enqueueSampleFetch(timeline.sampleQuery)
+  }, [timeline.sampleKey])
 
   useEffect(() => {
     if (!pageActive) return
@@ -437,14 +611,7 @@ export default function App() {
         }
         if (ev.globalRevision === lastRev.current) return
         lastRev.current = ev.globalRevision
-        const items = await fetchElements(timeline.sampleQuery)
-        if (cancelled) return
-        const ordered = orderElements(items)
-        setElements(ordered)
-        setSelectedId((cur) => {
-          if (!cur) return cur
-          return ordered.some((e) => e.id === cur) ? cur : null
-        })
+        enqueueSampleFetch(timelineSampleRef.current)
       } catch {
         // Ignore transient poll errors.
       }
@@ -455,7 +622,7 @@ export default function App() {
       cancelled = true
       window.clearInterval(id)
     }
-  }, [pageActive, timeline.sampleKey])
+  }, [pageActive])
 
   const selected = useMemo(() => {
     if (!elements || selectedId === null) return null
@@ -804,8 +971,13 @@ export default function App() {
                   onToggleVisibility: (id: string, visible: boolean) => void applyVisibility(id, visible),
                   onDelete: (id: string) => void removeElement(id),
                   views: hierarchyViews,
+                  onAddCamera: () => void addCamera(),
+                  onAdd3DView: addThreeDView,
                   onActivateView: (viewId: string) => {
-                    if (viewId === MAIN_3D_VIEW_ID) return
+                    if (viewId === MAIN_3D_VIEW_ID || isExtraThreeDViewId(viewId)) {
+                      workspaceRef.current?.focusThreeDView(viewId)
+                      return
+                    }
                     const imageId = imageIdFromViewId(viewId)
                     if (imageId) {
                       openImageView(imageId)
@@ -819,6 +991,10 @@ export default function App() {
                       setThreeDViewVisible(visible)
                       return
                     }
+                    if (isExtraThreeDViewId(viewId)) {
+                      setExtraThreeDViewFlags(viewId, { visible })
+                      return
+                    }
                     const imageId = imageIdFromViewId(viewId)
                     if (imageId) {
                       setImageViewFlags(imageId, { visible })
@@ -830,6 +1006,11 @@ export default function App() {
                     setCameraViewFlags(cameraId, { visible })
                   },
                   onDeleteView: (viewId: string) => {
+                    if (isExtraThreeDViewId(viewId)) {
+                      setExtraThreeDViewFlags(viewId, { deleted: true, visible: false })
+                      setExtraThreeDViewOrder((prev) => prev.filter((id) => id !== viewId))
+                      return
+                    }
                     const imageId = imageIdFromViewId(viewId)
                     if (imageId) {
                       setImageViewFlags(imageId, { deleted: true, visible: false })
@@ -876,6 +1057,8 @@ export default function App() {
             ref={workspaceRef}
             pointclouds={pointclouds}
             gaussians={gaussians}
+            boxes={boxes}
+            ellipsoids={ellipsoids}
             cameras={cameras}
             images={images}
             selectedId={selectedId}
@@ -891,14 +1074,19 @@ export default function App() {
             onTransformCommit={(id, position, rotation) => void onTransformCommit(id, position, rotation)}
             onRunUserAction={(action) => runUserAction(action)}
             onSelectTimelineFrame={(frame) => {
-              if (timeline.axis !== 'frame') {
-                timeline.setAxis('frame')
-                window.requestAnimationFrame(() => timeline.setValue(frame))
-                return
+              const currentAxisInfo = timeline.axes.find((a) => a.axis === timeline.axis)
+              if (currentAxisInfo?.kind !== 'sequence') {
+                const sequenceAxis = timeline.axes.find((a) => a.kind === 'sequence')
+                if (sequenceAxis) {
+                  timeline.setAxis(sequenceAxis.axis)
+                  window.requestAnimationFrame(() => timeline.setValue(frame))
+                  return
+                }
               }
               timeline.setValue(frame)
             }}
             show3D={threeDViewVisible}
+            extraThreeDViews={dockThreeDViews}
             imageViews={dockImageViews}
             cameraViews={dockCameraViews}
             sample={timeline.sampleQuery}
@@ -930,7 +1118,6 @@ export default function App() {
               <Inspector
                 selected={selected}
                 activeCameraId={activeCameraId}
-                onSetActiveCamera={setActiveCameraId}
                 onDelete={(id) => void removeElement(id)}
                 transformMode={transformMode}
                 onTransformModeChange={setTransformMode}
@@ -947,6 +1134,7 @@ export default function App() {
 
       <TimelineBar
         axis={timeline.axis}
+        axes={timeline.axes}
         value={timeline.value}
         bounds={timeline.bounds}
         isPlaying={timeline.isPlaying}

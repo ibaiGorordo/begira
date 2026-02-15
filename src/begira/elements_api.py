@@ -21,27 +21,46 @@ def mount_elements_api(app: FastAPI) -> None:
     These are additive and keep the existing pointcloud routes working.
     """
 
+    def _parse_write_query_params(params: Any) -> tuple[bool, int | None, float | None, str | None, Any, float | None]:
+        body: dict[str, Any] = {}
+        for key in ("static", "frame", "timestamp", "timeline", "timelineKind", "sequence", "timelineTimestamp", "time"):
+            value = params.get(key)
+            if value is not None:
+                body[key] = value
+        return parse_sample_body(body)
+
     @app.get("/api/timeline")
     def get_timeline() -> dict[str, Any]:
         return dict(REGISTRY.timeline_info())
 
     @app.get("/api/elements")
-    def list_elements(frame: int | None = None, timestamp: float | None = None) -> list[dict[str, Any]]:
+    def list_elements(
+        frame: int | None = None,
+        timestamp: float | None = None,
+        timeline: str | None = None,
+        time: float | None = None,
+    ) -> list[dict[str, Any]]:
         try:
-            frame_v, ts_v = parse_sample_query(frame, timestamp)
-            els = REGISTRY.list_elements(frame=frame_v, timestamp=ts_v)
+            frame_v, ts_v, timeline_v, time_v = parse_sample_query(frame, timestamp, timeline, time)
+            els = REGISTRY.list_elements(frame=frame_v, timestamp=ts_v, timeline=timeline_v, time_value=time_v)
         except ValueError as ex:
             raise HTTPException(status_code=400, detail=str(ex))
         return [element_to_list_item(e) for e in els]
 
     @app.get("/api/elements/{element_id}/meta")
-    def get_element_meta(element_id: str, frame: int | None = None, timestamp: float | None = None) -> dict[str, Any]:
+    def get_element_meta(
+        element_id: str,
+        frame: int | None = None,
+        timestamp: float | None = None,
+        timeline: str | None = None,
+        time: float | None = None,
+    ) -> dict[str, Any]:
         try:
-            frame_v, ts_v = parse_sample_query(frame, timestamp)
+            frame_v, ts_v, timeline_v, time_v = parse_sample_query(frame, timestamp, timeline, time)
         except ValueError as ex:
             raise HTTPException(status_code=400, detail=str(ex))
 
-        e = REGISTRY.get_element(element_id, frame=frame_v, timestamp=ts_v)
+        e = REGISTRY.get_element(element_id, frame=frame_v, timestamp=ts_v, timeline=timeline_v, time_value=time_v)
         if e is None:
             raise HTTPException(status_code=404, detail="Unknown element or no sample at requested time")
         try:
@@ -55,13 +74,15 @@ def mount_elements_api(app: FastAPI) -> None:
         payload_name: str,
         frame: int | None = None,
         timestamp: float | None = None,
+        timeline: str | None = None,
+        time: float | None = None,
     ) -> Response:
         try:
-            frame_v, ts_v = parse_sample_query(frame, timestamp)
+            frame_v, ts_v, timeline_v, time_v = parse_sample_query(frame, timestamp, timeline, time)
         except ValueError as ex:
             raise HTTPException(status_code=400, detail=str(ex))
 
-        e = REGISTRY.get_element(element_id, frame=frame_v, timestamp=ts_v)
+        e = REGISTRY.get_element(element_id, frame=frame_v, timestamp=ts_v, timeline=timeline_v, time_value=time_v)
         if e is None:
             raise HTTPException(status_code=404, detail="Unknown element or no sample at requested time")
 
@@ -140,7 +161,7 @@ def mount_elements_api(app: FastAPI) -> None:
                 raise HTTPException(status_code=400, detail="Invalid pointSize")
 
         try:
-            static_v, frame_v, ts_v = parse_sample_body(body)
+            static_v, frame_v, ts_v, timeline_v, timeline_kind_v, timeline_value_v = parse_sample_body(body)
         except ValueError as ex:
             raise HTTPException(status_code=400, detail=str(ex))
 
@@ -157,6 +178,9 @@ def mount_elements_api(app: FastAPI) -> None:
             "static": static_v,
             "frame": frame_v,
             "timestamp": ts_v,
+            "timeline": timeline_v,
+            "timelineKind": timeline_kind_v,
+            "time": timeline_value_v,
         }
 
     @app.put("/api/elements/{element_id}/payloads/points")
@@ -177,10 +201,8 @@ def mount_elements_api(app: FastAPI) -> None:
             point_size_f = None
 
         try:
-            static_v, frame_v, ts_v = parse_sample_query_with_static(
-                request.query_params.get("frame"),
-                request.query_params.get("timestamp"),
-                request.query_params.get("static"),
+            static_v, frame_v, ts_v, timeline_v, timeline_kind_v, timeline_value_v = _parse_write_query_params(
+                request.query_params
             )
         except ValueError as ex:
             raise HTTPException(status_code=400, detail=str(ex))
@@ -239,6 +261,9 @@ def mount_elements_api(app: FastAPI) -> None:
             static=static_v,
             frame=frame_v,
             timestamp=ts_v,
+            timeline=timeline_v,
+            timeline_kind=timeline_kind_v,
+            timeline_value=timeline_value_v,
         )
 
         return {
@@ -276,7 +301,7 @@ def mount_elements_api(app: FastAPI) -> None:
             element_id = uuid.uuid4().hex
 
         try:
-            static_v, frame_v, ts_v = parse_sample_body(body)
+            static_v, frame_v, ts_v, timeline_v, timeline_kind_v, timeline_value_v = parse_sample_body(body)
         except ValueError as ex:
             raise HTTPException(status_code=400, detail=str(ex))
 
@@ -293,6 +318,9 @@ def mount_elements_api(app: FastAPI) -> None:
             "static": static_v,
             "frame": frame_v,
             "timestamp": ts_v,
+            "timeline": timeline_v,
+            "timelineKind": timeline_kind_v,
+            "time": timeline_value_v,
         }
 
     @app.put("/api/elements/{element_id}/payloads/gaussians")
@@ -304,10 +332,8 @@ def mount_elements_api(app: FastAPI) -> None:
             raise HTTPException(status_code=400, detail="Missing query param: name")
 
         try:
-            static_v, frame_v, ts_v = parse_sample_query_with_static(
-                request.query_params.get("frame"),
-                request.query_params.get("timestamp"),
-                request.query_params.get("static"),
+            static_v, frame_v, ts_v, timeline_v, timeline_kind_v, timeline_value_v = _parse_write_query_params(
+                request.query_params
             )
         except ValueError as ex:
             raise HTTPException(status_code=400, detail=str(ex))
@@ -349,6 +375,9 @@ def mount_elements_api(app: FastAPI) -> None:
             static=static_v,
             frame=frame_v,
             timestamp=ts_v,
+            timeline=timeline_v,
+            timeline_kind=timeline_kind_v,
+            timeline_value=timeline_value_v,
         )
 
         return {
@@ -398,7 +427,7 @@ def mount_elements_api(app: FastAPI) -> None:
             element_id = uuid.uuid4().hex
 
         try:
-            static_v, frame_v, ts_v = parse_sample_body(body)
+            static_v, frame_v, ts_v, timeline_v, timeline_kind_v, timeline_value_v = parse_sample_body(body)
         except ValueError as ex:
             raise HTTPException(status_code=400, detail=str(ex))
 
@@ -414,6 +443,9 @@ def mount_elements_api(app: FastAPI) -> None:
             "static": static_v,
             "frame": frame_v,
             "timestamp": ts_v,
+            "timeline": timeline_v,
+            "timelineKind": timeline_kind_v,
+            "time": timeline_value_v,
         }
 
     @app.put("/api/elements/{element_id}/payloads/image")
@@ -439,10 +471,8 @@ def mount_elements_api(app: FastAPI) -> None:
             raise HTTPException(status_code=400, detail="channels must be a positive integer")
 
         try:
-            static_v, frame_v, ts_v = parse_sample_query_with_static(
-                request.query_params.get("frame"),
-                request.query_params.get("timestamp"),
-                request.query_params.get("static"),
+            static_v, frame_v, ts_v, timeline_v, timeline_kind_v, timeline_value_v = _parse_write_query_params(
+                request.query_params
             )
         except ValueError as ex:
             raise HTTPException(status_code=400, detail=str(ex))
@@ -463,6 +493,9 @@ def mount_elements_api(app: FastAPI) -> None:
                 static=static_v,
                 frame=frame_v,
                 timestamp=ts_v,
+                timeline=timeline_v,
+                timeline_kind=timeline_kind_v,
+                timeline_value=timeline_value_v,
             )
         except (TypeError, ValueError) as ex:
             raise HTTPException(status_code=400, detail=str(ex))
@@ -509,7 +542,7 @@ def mount_elements_api(app: FastAPI) -> None:
             width = int(width_raw) if width_raw is not None else None
             height = int(height_raw) if height_raw is not None else None
             intrinsic_matrix = body.get("intrinsicMatrix", body.get("intrinsic_matrix", None))
-            static_v, frame_v, ts_v = parse_sample_body(body)
+            static_v, frame_v, ts_v, timeline_v, timeline_kind_v, timeline_value_v = parse_sample_body(body)
         except (TypeError, ValueError):
             raise HTTPException(status_code=400, detail="Invalid camera intrinsics/projection/time fields")
 
@@ -532,6 +565,9 @@ def mount_elements_api(app: FastAPI) -> None:
                 static=static_v,
                 frame=frame_v,
                 timestamp=ts_v,
+                timeline=timeline_v,
+                timeline_kind=timeline_kind_v,
+                timeline_value=timeline_value_v,
             )
             return {
                 "ok": True,
@@ -568,7 +604,7 @@ def mount_elements_api(app: FastAPI) -> None:
             element_id = str(element_id).strip() or None
 
         try:
-            static_v, frame_v, ts_v = parse_sample_body(body)
+            static_v, frame_v, ts_v, timeline_v, timeline_kind_v, timeline_value_v = parse_sample_body(body)
             box = REGISTRY.upsert_box3d(
                 name=name,
                 position=position,  # type: ignore[arg-type]
@@ -579,6 +615,9 @@ def mount_elements_api(app: FastAPI) -> None:
                 static=static_v,
                 frame=frame_v,
                 timestamp=ts_v,
+                timeline=timeline_v,
+                timeline_kind=timeline_kind_v,
+                timeline_value=timeline_value_v,
             )
         except (TypeError, ValueError) as ex:
             raise HTTPException(status_code=400, detail=str(ex))
@@ -616,7 +655,7 @@ def mount_elements_api(app: FastAPI) -> None:
             element_id = str(element_id).strip() or None
 
         try:
-            static_v, frame_v, ts_v = parse_sample_body(body)
+            static_v, frame_v, ts_v, timeline_v, timeline_kind_v, timeline_value_v = parse_sample_body(body)
             ellipsoid = REGISTRY.upsert_ellipsoid3d(
                 name=name,
                 position=position,  # type: ignore[arg-type]
@@ -627,6 +666,9 @@ def mount_elements_api(app: FastAPI) -> None:
                 static=static_v,
                 frame=frame_v,
                 timestamp=ts_v,
+                timeline=timeline_v,
+                timeline_kind=timeline_kind_v,
+                timeline_value=timeline_value_v,
             )
         except (TypeError, ValueError) as ex:
             raise HTTPException(status_code=400, detail=str(ex))
@@ -1043,7 +1085,7 @@ def mount_elements_api(app: FastAPI) -> None:
             elif "intrinsic_matrix" in body:
                 intrinsic_matrix = body.get("intrinsic_matrix")
 
-            static_v, frame_v, ts_v = parse_sample_body(body)
+            static_v, frame_v, ts_v, timeline_v, timeline_kind_v, timeline_value_v = parse_sample_body(body)
 
             updated = REGISTRY.update_element_meta(
                 element_id,
@@ -1064,6 +1106,9 @@ def mount_elements_api(app: FastAPI) -> None:
                 static=static_v,
                 frame=frame_v,
                 timestamp=ts_v,
+                timeline=timeline_v,
+                timeline_kind=timeline_kind_v,
+                timeline_value=timeline_value_v,
             )
             return {
                 "ok": True,
@@ -1084,10 +1129,25 @@ def mount_elements_api(app: FastAPI) -> None:
         frame: int | None = None,
         timestamp: float | None = None,
         static: str | None = None,
+        timeline: str | None = None,
+        time: float | None = None,
     ) -> dict[str, Any]:
         try:
-            static_v, frame_v, ts_v = parse_sample_query_with_static(frame, timestamp, static)
-            e = REGISTRY.delete_element(element_id, static=static_v, frame=frame_v, timestamp=ts_v)
+            static_v, frame_v, ts_v, timeline_v, time_v = parse_sample_query_with_static(
+                frame,
+                timestamp,
+                static,
+                timeline,
+                time,
+            )
+            e = REGISTRY.delete_element(
+                element_id,
+                static=static_v,
+                frame=frame_v,
+                timestamp=ts_v,
+                timeline=timeline_v,
+                timeline_value=time_v,
+            )
             return {
                 "ok": True,
                 "id": e.id,

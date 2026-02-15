@@ -7,6 +7,7 @@ from typing import Generic, Literal, TypeVar
 
 T = TypeVar("T")
 TimeAxis = Literal["frame", "timestamp"]
+TimelineKind = Literal["sequence", "timestamp"]
 
 
 @dataclass(frozen=True)
@@ -14,6 +15,8 @@ class WriteTarget:
     axis: TimeAxis | None
     key: int | float | None
     auto: bool = False
+    timeline_name: str | None = None
+    timeline_kind: TimelineKind | None = None
 
 
 @dataclass

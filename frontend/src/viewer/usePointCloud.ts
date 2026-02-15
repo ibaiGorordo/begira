@@ -8,7 +8,7 @@ export type UsePointCloudState =
   | { status: 'ready'; meta: PointCloudElementMeta; decoded: DecodedPointCloud }
 
 function sampleDep(sample?: SampleQuery): string {
-  return `${sample?.frame ?? 'na'}|${sample?.timestamp ?? 'na'}`
+  return `${sample?.timeline ?? 'na'}|${sample?.time ?? 'na'}|${sample?.frame ?? 'na'}|${sample?.timestamp ?? 'na'}`
 }
 
 export function usePointCloud(cloudId: string, sample?: SampleQuery, enabled = true): UsePointCloudState {

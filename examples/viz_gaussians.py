@@ -7,8 +7,6 @@ def main() -> None:
     # Use a different port to avoid conflicts if another instance is running
     client = begira.run(port=57793)
 
-    client.set_coordinate_convention(begira.CoordinateConvention.Z_UP)
-
     assets_dir = Path(__file__).resolve().parent / "assets"
     gs_path = assets_dir / "gaussians.ply"
     

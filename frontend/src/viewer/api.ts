@@ -1,34 +1,47 @@
 export type ElementType = 'pointcloud' | 'gaussians' | 'camera' | 'image' | 'box3d' | 'ellipsoid3d'
-export type TimelineAxis = 'frame' | 'timestamp'
+export type TimelineKind = 'sequence' | 'timestamp'
+export type TimelineAxis = string
 
 export type SampleQuery = {
   frame?: number
   timestamp?: number
+  timeline?: string
+  time?: number
 }
 
 export type TimelineInfo = {
-  defaultAxis: TimelineAxis
+  defaultAxis: TimelineAxis | null
   axes: Array<{
     axis: TimelineAxis
+    kind: TimelineKind
     min: number | null
     max: number | null
     hasData: boolean
   }>
-  latest: {
-    frame: number | null
-    timestamp: number | null
-  }
+  latest: Record<string, number | null>
 }
 
-function appendSampleToUrl(rawUrl: string, sample?: SampleQuery): string {
+export function appendSampleToUrl(rawUrl: string, sample?: SampleQuery): string {
   if (!sample) return rawUrl
+  const hasTimeline = sample.timeline !== undefined
+  const hasTime = sample.time !== undefined
   const hasFrame = sample.frame !== undefined
   const hasTimestamp = sample.timestamp !== undefined
-  if (hasFrame && hasTimestamp) {
+  if (hasTimeline !== hasTime) {
+    throw new Error('Sample query timeline and time must be provided together')
+  }
+  if ((hasTimeline || hasTime) && (hasFrame || hasTimestamp)) {
+    // Local components may carry resolved frame for UX; URL sampling should prefer named timelines.
+  } else if (hasFrame && hasTimestamp) {
     throw new Error('Sample query cannot include both frame and timestamp')
   }
 
   const url = new URL(rawUrl, window.location.origin)
+  if (hasTimeline && hasTime) {
+    url.searchParams.set('timeline', String(sample.timeline))
+    url.searchParams.set('time', String(Number(sample.time)))
+    return `${url.pathname}${url.search}`
+  }
   if (hasFrame) {
     url.searchParams.set('frame', String(Math.round(Number(sample.frame))))
   }
@@ -246,6 +259,11 @@ export type UpdateElementMetaRequest = {
   far?: number
   frame?: number
   timestamp?: number
+  timeline?: string
+  sequence?: number
+  timelineTimestamp?: number
+  timelineKind?: TimelineKind
+  time?: number
   static?: boolean
 }
 

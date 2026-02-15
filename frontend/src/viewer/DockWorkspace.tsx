@@ -1,7 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { Actions, DockLocation, Layout, Model, type IJsonModel, type Node, type TabNode, type TabSetNode } from 'flexlayout-react'
 import PointCloudCanvas from './PointCloudCanvas'
-import type { ElementInfo, SampleQuery } from './api'
+import { appendSampleToUrl, type ElementInfo, type SampleQuery } from './api'
 
 const ROOT_ROW_ID = 'workspace-root-row'
 const THREE_D_TABSET_ID = 'workspace-tabset-3d'
@@ -10,11 +10,26 @@ const THREE_D_TAB_ID = 'view-3d-main'
 type TransformMode = 'translate' | 'rotate' | 'animate'
 type UndoableAction = { label: string; do: () => Promise<void>; undo: () => Promise<void> }
 
+type ViewCameraSnapshot = {
+  position: [number, number, number]
+  rotation: [number, number, number, number]
+  fov?: number
+  near?: number
+  far?: number
+}
+
 export type DockImageView = {
   id: string
   imageId: string
   name: string
   visible: boolean
+}
+
+export type DockThreeDView = {
+  id: string
+  name: string
+  visible: boolean
+  initialCamera?: ViewCameraSnapshot | null
 }
 
 export type DockCameraView = {
@@ -27,6 +42,8 @@ export type DockCameraView = {
 type DockWorkspaceProps = {
   pointclouds: ElementInfo[]
   gaussians: ElementInfo[]
+  boxes: ElementInfo[]
+  ellipsoids: ElementInfo[]
   cameras: ElementInfo[]
   images: ElementInfo[]
   selectedId: string | null
@@ -40,6 +57,7 @@ type DockWorkspaceProps = {
   onRunUserAction?: (action: UndoableAction) => Promise<void>
   onSelectTimelineFrame?: (frame: number) => void
   show3D: boolean
+  extraThreeDViews: DockThreeDView[]
   imageViews: DockImageView[]
   cameraViews: DockCameraView[]
   sample?: SampleQuery
@@ -48,6 +66,7 @@ type DockWorkspaceProps = {
 export type DockWorkspaceHandle = {
   focusImage: (imageId: string) => void
   focusCamera: (cameraId: string) => void
+  focusThreeDView: (viewId: string) => void
 }
 
 const initialLayout: IJsonModel = {
@@ -152,6 +171,8 @@ function findAnyTabset(model: Model): TabSetNode | null {
 function ThreeDTabPane({
   pointclouds,
   gaussians,
+  boxes,
+  ellipsoids,
   cameras,
   selectedId,
   onSelect,
@@ -164,7 +185,13 @@ function ThreeDTabPane({
   onRunUserAction,
   onSelectTimelineFrame,
   sample,
-}: Omit<DockWorkspaceProps, 'show3D' | 'imageViews' | 'cameraViews' | 'images'> & { images: ElementInfo[] }) {
+  isPrimary,
+  initialViewCamera,
+}: Omit<DockWorkspaceProps, 'show3D' | 'extraThreeDViews' | 'imageViews' | 'cameraViews' | 'images'> & {
+  images: ElementInfo[]
+  isPrimary: boolean
+  initialViewCamera?: ViewCameraSnapshot | null
+}) {
   const cameraVisuals = useMemo(
     () =>
       cameras.map((c) => ({
@@ -202,21 +229,42 @@ function ThreeDTabPane({
         </button>
       </div>
 
-      <PointCloudCanvas
-        cloudIds={pointclouds.map((c) => c.id)}
-        gaussianIds={gaussians.map((c) => c.id)}
-        cameraIds={cameras.map((c) => c.id)}
-        cameraVisuals={cameraVisuals}
+        <PointCloudCanvas
+          cloudIds={pointclouds.map((c) => c.id)}
+          gaussianIds={gaussians.map((c) => c.id)}
+          boxIds={boxes.map((c) => c.id)}
+          ellipsoidIds={ellipsoids.map((c) => c.id)}
+          cameraIds={cameras.map((c) => c.id)}
+          boxVisuals={boxes.map((b) => ({
+            id: b.id,
+            position: b.position,
+            rotation: b.rotation,
+            size: b.size,
+            color: b.color,
+            visible: b.visible,
+          }))}
+          ellipsoidVisuals={ellipsoids.map((e) => ({
+            id: e.id,
+            position: e.position,
+            rotation: e.rotation,
+            radii: e.radii,
+            color: e.color,
+            visible: e.visible,
+          }))}
+          cameraVisuals={cameraVisuals}
         selectedId={selectedId}
         onSelect={onSelect}
         focusTarget={focusTarget}
         onFocus={onFocus}
-        cloudMetaBounds={pointclouds.map((c) => c.bounds).filter(Boolean) as { min: [number, number, number]; max: [number, number, number] }[]}
-        gaussianMetaBounds={gaussians.map((c) => c.bounds).filter(Boolean) as { min: [number, number, number]; max: [number, number, number] }[]}
-        cameraMetaBounds={cameras.map((c) => c.bounds).filter(Boolean) as { min: [number, number, number]; max: [number, number, number] }[]}
-        activeCameraId={activeCameraId}
+          cloudMetaBounds={pointclouds.map((c) => c.bounds).filter(Boolean) as { min: [number, number, number]; max: [number, number, number] }[]}
+          gaussianMetaBounds={gaussians.map((c) => c.bounds).filter(Boolean) as { min: [number, number, number]; max: [number, number, number] }[]}
+          boxMetaBounds={boxes.map((c) => c.bounds).filter(Boolean) as { min: [number, number, number]; max: [number, number, number] }[]}
+          ellipsoidMetaBounds={ellipsoids.map((c) => c.bounds).filter(Boolean) as { min: [number, number, number]; max: [number, number, number] }[]}
+          cameraMetaBounds={cameras.map((c) => c.bounds).filter(Boolean) as { min: [number, number, number]; max: [number, number, number] }[]}
+        activeCameraId={isPrimary ? activeCameraId : null}
         transformMode={transformMode}
         sample={sample}
+        initialViewCamera={initialViewCamera}
         onRunUserAction={onRunUserAction}
         onSelectTimelineFrame={onSelectTimelineFrame}
         onTransformCommit={(id, position, rotation) => onTransformCommit(id, position, rotation)}
@@ -249,8 +297,10 @@ function ImageTabPane({
   const width = asNumber((summary as Record<string, unknown>).width)
   const height = asNumber((summary as Record<string, unknown>).height)
   const channels = asNumber((summary as Record<string, unknown>).channels)
-  const qs = sample?.frame !== undefined ? `&frame=${Math.round(sample.frame)}` : sample?.timestamp !== undefined ? `&timestamp=${sample.timestamp}` : ''
-  const imageUrl = `/api/elements/${encodeURIComponent(selectedImage.id)}/payloads/image?rev=${selectedImage.revision}${qs}`
+  const imageUrl = appendSampleToUrl(
+    `/api/elements/${encodeURIComponent(selectedImage.id)}/payloads/image?rev=${selectedImage.revision}`,
+    sample
+  )
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
@@ -304,6 +354,8 @@ function CameraTabPane({
   node,
   pointclouds,
   gaussians,
+  boxes,
+  ellipsoids,
   cameras,
   selectedId,
   onSelect,
@@ -341,7 +393,25 @@ function CameraTabPane({
       <PointCloudCanvas
         cloudIds={pointclouds.map((c) => c.id)}
         gaussianIds={gaussians.map((c) => c.id)}
+        boxIds={boxes.map((c) => c.id)}
+        ellipsoidIds={ellipsoids.map((c) => c.id)}
         cameraIds={cameras.map((c) => c.id)}
+        boxVisuals={boxes.map((b) => ({
+          id: b.id,
+          position: b.position,
+          rotation: b.rotation,
+          size: b.size,
+          color: b.color,
+          visible: b.visible,
+        }))}
+        ellipsoidVisuals={ellipsoids.map((e) => ({
+          id: e.id,
+          position: e.position,
+          rotation: e.rotation,
+          radii: e.radii,
+          color: e.color,
+          visible: e.visible,
+        }))}
         cameraVisuals={cameraVisuals}
         selectedId={selectedId}
         onSelect={onSelect}
@@ -349,6 +419,8 @@ function CameraTabPane({
         onFocus={onFocus}
         cloudMetaBounds={pointclouds.map((c) => c.bounds).filter(Boolean) as { min: [number, number, number]; max: [number, number, number] }[]}
         gaussianMetaBounds={gaussians.map((c) => c.bounds).filter(Boolean) as { min: [number, number, number]; max: [number, number, number] }[]}
+        boxMetaBounds={boxes.map((c) => c.bounds).filter(Boolean) as { min: [number, number, number]; max: [number, number, number] }[]}
+        ellipsoidMetaBounds={ellipsoids.map((c) => c.bounds).filter(Boolean) as { min: [number, number, number]; max: [number, number, number] }[]}
         cameraMetaBounds={cameras.map((c) => c.bounds).filter(Boolean) as { min: [number, number, number]; max: [number, number, number] }[]}
         activeCameraId={cameraId}
         transformMode={transformMode}
@@ -436,6 +508,66 @@ const DockWorkspace = forwardRef<DockWorkspaceHandle, DockWorkspaceProps>(functi
     }
     sanitizeEmptyTabsets()
   }, [model, props.show3D, sanitizeEmptyTabsets])
+
+  useEffect(() => {
+    const desired = props.extraThreeDViews.filter((v) => v.visible)
+    const desiredById = new Map(desired.map((v) => [v.id, v]))
+
+    const existingExtraThreeDTabs: TabNode[] = []
+    model.visitNodes((node: Node) => {
+      if (node.getType() !== 'tab') return
+      const tab = node as TabNode
+      if (tab.getComponent() !== '3d') return
+      if (tab.getId() === THREE_D_TAB_ID) return
+      existingExtraThreeDTabs.push(tab)
+    })
+
+    for (const tab of existingExtraThreeDTabs) {
+      const expected = desiredById.get(tab.getId())
+      if (!expected) {
+        model.doAction(Actions.deleteTab(tab.getId()))
+      }
+    }
+
+    for (const view of desired) {
+      const existing = model.getNodeById(view.id)
+      if (!existing || existing.getType() !== 'tab' || (existing as TabNode).getComponent() !== '3d') {
+        const threeDTabset = model.getNodeById(THREE_D_TABSET_ID)
+        const hostTabset = threeDTabset && threeDTabset.getType() === 'tabset' ? (threeDTabset as TabSetNode) : findAnyTabset(model)
+        const hostId = hostTabset?.getId() ?? ROOT_ROW_ID
+        model.doAction(
+          Actions.addNode(
+            {
+              type: 'tab' as const,
+              id: view.id,
+              component: '3d',
+              name: view.name,
+              config: { primary: false, initialCamera: view.initialCamera ?? null },
+              enableClose: false,
+            },
+            hostId,
+            DockLocation.RIGHT,
+            -1,
+            false,
+          ),
+        )
+      } else {
+        const tab = existing as TabNode
+        const cfg = tab.getConfig() as { initialCamera?: ViewCameraSnapshot | null } | undefined
+        const sameInitial = JSON.stringify(cfg?.initialCamera ?? null) === JSON.stringify(view.initialCamera ?? null)
+        if (tab.getName() !== view.name || !sameInitial) {
+          model.doAction(
+            Actions.updateNodeAttributes(view.id, {
+              name: view.name,
+              config: { primary: false, initialCamera: view.initialCamera ?? null },
+            }),
+          )
+        }
+      }
+    }
+
+    sanitizeEmptyTabsets()
+  }, [model, props.extraThreeDViews, sanitizeEmptyTabsets])
 
   useEffect(() => {
     const desired = props.imageViews.filter((v) => v.visible)
@@ -608,19 +740,40 @@ const DockWorkspace = forwardRef<DockWorkspaceHandle, DockWorkspaceProps>(functi
     [model, props]
   )
 
+  const focusThreeDView = useCallback(
+    (viewId: string) => {
+      const node = model.getNodeById(viewId)
+      if (!node || node.getType() !== 'tab') return
+      const tab = node as TabNode
+      if (tab.getComponent() !== '3d') return
+      model.doAction(Actions.selectTab(viewId))
+    },
+    [model],
+  )
+
   useImperativeHandle(
     ref,
     () => ({
       focusImage,
       focusCamera,
+      focusThreeDView,
     }),
-    [focusCamera, focusImage]
+    [focusCamera, focusImage, focusThreeDView]
   )
 
   const factory = useCallback(
     (node: TabNode) => {
       const component = node.getComponent()
-      if (component === '3d') return <ThreeDTabPane {...props} />
+      if (component === '3d') {
+        const config = node.getConfig() as { initialCamera?: ViewCameraSnapshot | null } | undefined
+        return (
+          <ThreeDTabPane
+            {...props}
+            isPrimary={node.getId() === THREE_D_TAB_ID}
+            initialViewCamera={config?.initialCamera ?? null}
+          />
+        )
+      }
       if (component === 'image') return <ImageTabPane node={node} imagesById={imagesById} sample={props.sample} />
       if (component === 'camera') return <CameraTabPane node={node} {...props} />
       return <div className="empty-pane">Unknown view component: {component}</div>

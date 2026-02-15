@@ -9,6 +9,14 @@ import GaussianSplatScene from './GaussianSplatScene'
 import CameraScene, { CAMERA_GIZMO_OVERLAY_LAYER, type CameraVisual } from './CameraScene'
 import CameraTrajectoryScene from './CameraTrajectoryScene'
 import {
+  BoxScene,
+  EllipsoidScene,
+  WireBoxOverlayScene,
+  type BoxVisual,
+  type EllipsoidVisual,
+  type WireBoxOverlay,
+} from './PrimitiveShapeScene'
+import {
   createClickGesture,
   isClickGesture,
   onPointerDownGesture,
@@ -278,7 +286,7 @@ function ViewCameraReporter() {
   return null
 }
 
-function OverlayCameraRenderPass() {
+function OverlayCameraRenderPass({ enableGaussianDepthPrepass = false }: { enableGaussianDepthPrepass?: boolean }) {
   const { gl, scene, camera, raycaster } = useThree()
   useEffect(() => {
     camera.layers.enable(CAMERA_GIZMO_OVERLAY_LAYER)
@@ -288,18 +296,40 @@ function OverlayCameraRenderPass() {
   useFrame(() => {
     const prevAutoClear = gl.autoClear
     const prevMask = camera.layers.mask
+    let colorMaskDisabled = false
 
-    gl.autoClear = true
-    camera.layers.set(0)
-    gl.render(scene, camera)
+    try {
+      gl.autoClear = true
+      camera.layers.set(0)
+      gl.render(scene, camera)
 
-    gl.autoClear = false
-    gl.clearDepth()
-    camera.layers.set(CAMERA_GIZMO_OVERLAY_LAYER)
-    gl.render(scene, camera)
+      gl.autoClear = false
+      if (enableGaussianDepthPrepass) {
+        const anyWin = window as any
+        const colorBuffer = gl.state.buffers.color
+        gl.clearDepth()
+        colorBuffer.setMask(false)
+        colorMaskDisabled = true
+        anyWin.__begira_spark_depth_prepass = true
+        camera.layers.set(0)
+        gl.render(scene, camera)
+        anyWin.__begira_spark_depth_prepass = false
+        colorBuffer.setMask(true)
+        colorMaskDisabled = false
+      } else {
+        gl.clearDepth()
+      }
 
-    camera.layers.mask = prevMask
-    gl.autoClear = prevAutoClear
+      camera.layers.set(CAMERA_GIZMO_OVERLAY_LAYER)
+      gl.render(scene, camera)
+    } finally {
+      ;(window as any).__begira_spark_depth_prepass = false
+      if (colorMaskDisabled) {
+        gl.state.buffers.color.setMask(true)
+      }
+      camera.layers.mask = prevMask
+      gl.autoClear = prevAutoClear
+    }
   }, 1)
   return null
 }
@@ -406,7 +436,11 @@ function useSceneBounds(): {
 export default function PointCloudCanvas({
   cloudIds,
   gaussianIds = [],
+  boxIds = [],
+  ellipsoidIds = [],
   cameraIds = [],
+  boxVisuals = [],
+  ellipsoidVisuals = [],
   cameraVisuals = [],
   selectedId,
   onSelect,
@@ -414,18 +448,25 @@ export default function PointCloudCanvas({
   onFocus,
   cloudMetaBounds,
   gaussianMetaBounds = [],
+  boxMetaBounds = [],
+  ellipsoidMetaBounds = [],
   cameraMetaBounds = [],
   activeCameraId,
   transformMode = 'translate',
   sample,
   secondaryView = false,
+  initialViewCamera,
   onTransformCommit,
   onRunUserAction,
   onSelectTimelineFrame,
 }: {
   cloudIds: string[]
   gaussianIds?: string[]
+  boxIds?: string[]
+  ellipsoidIds?: string[]
   cameraIds?: string[]
+  boxVisuals?: BoxVisual[]
+  ellipsoidVisuals?: EllipsoidVisual[]
   cameraVisuals?: CameraVisual[]
   selectedId: string | null
   onSelect: (id: string | null) => void
@@ -433,11 +474,20 @@ export default function PointCloudCanvas({
   onFocus: (id: string | null) => void
   cloudMetaBounds: { min: [number, number, number]; max: [number, number, number] }[]
   gaussianMetaBounds?: { min: [number, number, number]; max: [number, number, number] }[]
+  boxMetaBounds?: { min: [number, number, number]; max: [number, number, number] }[]
+  ellipsoidMetaBounds?: { min: [number, number, number]; max: [number, number, number] }[]
   cameraMetaBounds?: { min: [number, number, number]; max: [number, number, number] }[]
   activeCameraId?: string | null
   transformMode?: 'translate' | 'rotate' | 'animate'
   sample?: SampleQuery
   secondaryView?: boolean
+  initialViewCamera?: {
+    position: [number, number, number]
+    rotation: [number, number, number, number]
+    fov?: number
+    near?: number
+    far?: number
+  } | null
   onTransformCommit?: (id: string, position: [number, number, number], rotation: [number, number, number, number]) => void
   onRunUserAction?: (action: UndoableAction) => Promise<void>
   onSelectTimelineFrame?: (frame: number) => void
@@ -523,9 +573,9 @@ export default function PointCloudCanvas({
 
   // IMPORTANT: refit whenever convention changes.
   useEffect(() => {
-    if (cloudIds.length === 0 && gaussianIds.length === 0) return
+    if (cloudIds.length === 0 && gaussianIds.length === 0 && boxIds.length === 0 && ellipsoidIds.length === 0) return
     bumpFocus('convention-change')
-  }, [conventionId, cloudIds.length, gaussianIds.length, bumpFocus])
+  }, [conventionId, cloudIds.length, gaussianIds.length, boxIds.length, ellipsoidIds.length, bumpFocus])
 
   // Choose a forward direction that makes the change visible.
   const viewForward = useMemo(() => {
@@ -562,7 +612,10 @@ export default function PointCloudCanvas({
 
   // Initialize focus when elements first appear.
   const prevElementCount = useRef(0)
-  const allElementIds = useMemo(() => [...cloudIds, ...gaussianIds, ...cameraIds], [cloudIds, gaussianIds, cameraIds])
+  const allElementIds = useMemo(
+    () => [...cloudIds, ...gaussianIds, ...boxIds, ...ellipsoidIds, ...cameraIds],
+    [cloudIds, gaussianIds, boxIds, ellipsoidIds, cameraIds],
+  )
   useEffect(() => {
     const prev = prevElementCount.current
     prevElementCount.current = allElementIds.length
@@ -623,8 +676,14 @@ export default function PointCloudCanvas({
   // Scene bounds from meta:
   const scene = useSceneBounds()
   useEffect(() => {
-    scene.setBoundsFromMeta([...cloudMetaBounds, ...gaussianMetaBounds, ...cameraMetaBounds])
-  }, [cloudMetaBounds, gaussianMetaBounds, cameraMetaBounds, scene])
+    scene.setBoundsFromMeta([
+      ...cloudMetaBounds,
+      ...gaussianMetaBounds,
+      ...boxMetaBounds,
+      ...ellipsoidMetaBounds,
+      ...cameraMetaBounds,
+    ])
+  }, [cloudMetaBounds, gaussianMetaBounds, boxMetaBounds, ellipsoidMetaBounds, cameraMetaBounds, scene])
 
   const focusBounds = useMemo(() => {
     let b: Bounds3 | null = null
@@ -644,11 +703,25 @@ export default function PointCloudCanvas({
           const mb = gaussianMetaBounds[gIdx]
           if (mb) b = { min: new THREE.Vector3(...mb.min), max: new THREE.Vector3(...mb.max) }
         } else {
-          // Search in cameras
-          const camIdx = cameraIds.findIndex((x) => x === focusId)
-          if (camIdx >= 0) {
-            const mb = cameraMetaBounds[camIdx]
+          // Search in boxes.
+          const boxIdx = boxIds.findIndex((x) => x === focusId)
+          if (boxIdx >= 0) {
+            const mb = boxMetaBounds[boxIdx]
             if (mb) b = { min: new THREE.Vector3(...mb.min), max: new THREE.Vector3(...mb.max) }
+          } else {
+            // Search in ellipsoids.
+            const ellipsoidIdx = ellipsoidIds.findIndex((x) => x === focusId)
+            if (ellipsoidIdx >= 0) {
+              const mb = ellipsoidMetaBounds[ellipsoidIdx]
+              if (mb) b = { min: new THREE.Vector3(...mb.min), max: new THREE.Vector3(...mb.max) }
+            } else {
+              // Search in cameras.
+              const camIdx = cameraIds.findIndex((x) => x === focusId)
+              if (camIdx >= 0) {
+                const mb = cameraMetaBounds[camIdx]
+                if (mb) b = { min: new THREE.Vector3(...mb.min), max: new THREE.Vector3(...mb.max) }
+              }
+            }
           }
         }
       }
@@ -664,6 +737,10 @@ export default function PointCloudCanvas({
     gaussianIds,
     cloudMetaBounds,
     gaussianMetaBounds,
+    boxIds,
+    boxMetaBounds,
+    ellipsoidIds,
+    ellipsoidMetaBounds,
     convention.worldToView,
     firstCloudId,
     firstDecodedBounds,
@@ -711,6 +788,7 @@ export default function PointCloudCanvas({
   const [pullEnabled, setPullEnabled] = useState(true)
   const [pullInfluenceFrames, setPullInfluenceFrames] = useState(12)
   const [trajectoryOpBusy, setTrajectoryOpBusy] = useState(false)
+  const [visualOverrideVersion, setVisualOverrideVersion] = useState(0)
   const currentSampleFrame = sample?.frame !== undefined ? Math.round(sample.frame) : null
 
   const activeCameraReady = !!activeCameraMeta
@@ -722,6 +800,63 @@ export default function PointCloudCanvas({
     if (followCameraId) ids.add(followCameraId)
     return ids
   }, [activeCameraId, followCameraId])
+
+  useEffect(() => {
+    const onOverrideChanged = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ id?: string }>).detail
+      const changedId = detail?.id
+      if (changedId && !cloudIds.includes(changedId) && !gaussianIds.includes(changedId)) return
+      setVisualOverrideVersion((v) => v + 1)
+    }
+    window.addEventListener('begira_visual_override_changed', onOverrideChanged as EventListener)
+    return () => window.removeEventListener('begira_visual_override_changed', onOverrideChanged as EventListener)
+  }, [cloudIds, gaussianIds])
+
+  const boundaryOverlayBoxes = useMemo<WireBoxOverlay[]>(() => {
+    const out: WireBoxOverlay[] = []
+    const overrides = ((window as any).__begira_visual_override ?? {}) as Record<string, { showBounds?: boolean }>
+    for (let i = 0; i < cloudIds.length; i += 1) {
+      const id = cloudIds[i]
+      if (!overrides[id]?.showBounds) continue
+      const b = cloudMetaBounds[i]
+      if (!b) continue
+      out.push({
+        id: `bounds-pointcloud-${id}`,
+        center: [
+          (b.min[0] + b.max[0]) * 0.5,
+          (b.min[1] + b.max[1]) * 0.5,
+          (b.min[2] + b.max[2]) * 0.5,
+        ],
+        size: [
+          Math.max(1e-6, b.max[0] - b.min[0]),
+          Math.max(1e-6, b.max[1] - b.min[1]),
+          Math.max(1e-6, b.max[2] - b.min[2]),
+        ],
+        color: [0.62, 0.8, 1.0],
+      })
+    }
+    for (let i = 0; i < gaussianIds.length; i += 1) {
+      const id = gaussianIds[i]
+      if (!overrides[id]?.showBounds) continue
+      const b = gaussianMetaBounds[i]
+      if (!b) continue
+      out.push({
+        id: `bounds-gaussians-${id}`,
+        center: [
+          (b.min[0] + b.max[0]) * 0.5,
+          (b.min[1] + b.max[1]) * 0.5,
+          (b.min[2] + b.max[2]) * 0.5,
+        ],
+        size: [
+          Math.max(1e-6, b.max[0] - b.min[0]),
+          Math.max(1e-6, b.max[1] - b.min[1]),
+          Math.max(1e-6, b.max[2] - b.min[2]),
+        ],
+        color: [0.55, 0.72, 1.0],
+      })
+    }
+    return out
+  }, [cloudIds, gaussianIds, cloudMetaBounds, gaussianMetaBounds, visualOverrideVersion])
 
   const dispatchAnimationChanged = useCallback((cameraId: string) => {
     window.dispatchEvent(
@@ -1094,6 +1229,27 @@ export default function PointCloudCanvas({
 
         // ALWAYS keep Three.js native up for camera/controls
         ;(camera as THREE.Camera).up.copy(VIEW_UP)
+
+        if (initialViewCamera) {
+          const cam = camera as THREE.PerspectiveCamera
+          cam.position.set(initialViewCamera.position[0], initialViewCamera.position[1], initialViewCamera.position[2])
+          cam.quaternion.set(
+            initialViewCamera.rotation[0],
+            initialViewCamera.rotation[1],
+            initialViewCamera.rotation[2],
+            initialViewCamera.rotation[3],
+          ).normalize()
+          if (typeof initialViewCamera.fov === 'number' && Number.isFinite(initialViewCamera.fov)) {
+            cam.fov = THREE.MathUtils.clamp(initialViewCamera.fov, 5, 175)
+          }
+          if (typeof initialViewCamera.near === 'number' && Number.isFinite(initialViewCamera.near)) {
+            cam.near = Math.max(0.0001, initialViewCamera.near)
+          }
+          if (typeof initialViewCamera.far === 'number' && Number.isFinite(initialViewCamera.far)) {
+            cam.far = Math.max(cam.near + 0.01, initialViewCamera.far)
+          }
+          cam.updateProjectionMatrix()
+        }
       }}
       onPointerDown={(e) => onPointerDownGesture(canvasGesture.current, e.nativeEvent)}
       onPointerMove={(e) => onPointerMoveGesture(canvasGesture.current, e.nativeEvent)}
@@ -1108,7 +1264,9 @@ export default function PointCloudCanvas({
     >
       <DebugOverlay enabled={debugOverlayEnabled && !secondaryView} />
       <ViewCameraReporter />
-      <OverlayCameraRenderPass />
+      <OverlayCameraRenderPass
+        enableGaussianDepthPrepass={!!(selectedCameraForTrajectory && animateMode && !secondaryView && cameraAnimationTrajectory)}
+      />
       <FollowCameraDriver cameraMeta={followCameraMeta} enabled={followCameraActive} worldToView={convention.worldToView} />
 
       <ambientLight intensity={0.6} />
@@ -1164,6 +1322,37 @@ export default function PointCloudCanvas({
           }}
           onRegisterObject={registerObject}
         />
+        <BoxScene
+          boxes={boxVisuals}
+          selectedId={selectedId}
+          onSelect={(id) => {
+            setFollowCameraId(null)
+            onSelect(id)
+          }}
+          onFocus={(id) => {
+            setFollowCameraId(null)
+            setFocusId(id)
+            bumpFocus('box:doubleclick-focus')
+            onFocus(id)
+          }}
+          onRegisterObject={registerObject}
+        />
+        <EllipsoidScene
+          ellipsoids={ellipsoidVisuals}
+          selectedId={selectedId}
+          onSelect={(id) => {
+            setFollowCameraId(null)
+            onSelect(id)
+          }}
+          onFocus={(id) => {
+            setFollowCameraId(null)
+            setFocusId(id)
+            bumpFocus('ellipsoid:doubleclick-focus')
+            onFocus(id)
+          }}
+          onRegisterObject={registerObject}
+        />
+        {!secondaryView && boundaryOverlayBoxes.length > 0 && <WireBoxOverlayScene boxes={boundaryOverlayBoxes} />}
         <CameraScene
           cameras={cameraVisuals}
           selectedId={selectedId}

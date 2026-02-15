@@ -55,3 +55,24 @@ def test_camera_look_at_supports_time_args() -> None:
     cp = np.asarray(cm['position'], dtype=np.float64)
     tp = np.asarray(server.get_element_meta(pts.id, frame=5)['position'], dtype=np.float64)
     assert np.isclose(np.linalg.norm(tp - cp), 1.0, atol=1e-6)
+
+
+def test_set_times_custom_sequence_timeline() -> None:
+    server = BegiraServer(host='127.0.0.1', port=0, url='http://127.0.0.1:0/')
+
+    server.set_times('step', sequence=12)
+    pts = server.log_points(
+        'pts',
+        np.asarray([[0.0, 0.0, 0.0]], dtype=np.float32),
+        np.asarray([[255, 0, 0]], dtype=np.uint8),
+    )
+    server.clear_time()
+
+    # Sequence timelines are sampled on the frame axis internally.
+    meta = server.get_element_meta(pts.id, frame=12)
+    assert meta['id'] == pts.id
+
+    info = server.get_timeline_info()
+    step_axis = next((a for a in info['axes'] if a.get('axis') == 'step'), None)
+    assert step_axis is not None
+    assert step_axis.get('kind') == 'sequence'

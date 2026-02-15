@@ -2,9 +2,10 @@ import { useEffect, useState } from 'react'
 
 function readIsActive(): boolean {
   if (typeof document === 'undefined') return true
-  const visible = document.visibilityState === 'visible'
-  const focused = typeof document.hasFocus === 'function' ? document.hasFocus() : true
-  return visible && focused
+  if (typeof document.visibilityState === 'string') {
+    return document.visibilityState !== 'hidden'
+  }
+  return true
 }
 
 export function usePageActivity(): boolean {
@@ -29,4 +30,3 @@ export function usePageActivity(): boolean {
 
   return active
 }
-

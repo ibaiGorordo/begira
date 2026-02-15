@@ -20,7 +20,6 @@ import { COLORMAPS, DEFAULT_DEPTH_COLORMAP, DEFAULT_HEIGHT_COLORMAP, type Colorm
 type Props = {
   selected: ElementInfo | null
   activeCameraId: string | null
-  onSetActiveCamera: (id: string | null) => void
   onDelete: (id: string) => void
   transformMode: 'translate' | 'rotate' | 'animate'
   onTransformModeChange: (mode: 'translate' | 'rotate' | 'animate') => void
@@ -39,7 +38,6 @@ type Props = {
 export default function Inspector({
   selected,
   activeCameraId,
-  onSetActiveCamera,
   onDelete,
   transformMode,
   onTransformModeChange,
@@ -64,6 +62,8 @@ export default function Inspector({
   const isGaussians = selected?.type === 'gaussians'
   const isCamera = selected?.type === 'camera'
   const isImage = selected?.type === 'image'
+  const isBox3D = selected?.type === 'box3d'
+  const isEllipsoid3D = selected?.type === 'ellipsoid3d'
 
   // LOD override state
   const [lodOverride, setLodOverride] = useState<string | undefined>(undefined)
@@ -73,6 +73,7 @@ export default function Inspector({
   const [colorMode, setColorMode] = useState<ColorMode>('logged')
   const [solidColor, setSolidColor] = useState<string>('#ff8a33') // hex string for input[type=color]
   const [colorMap, setColorMap] = useState<ColormapId>(DEFAULT_HEIGHT_COLORMAP)
+  const [showBounds, setShowBounds] = useState(false)
   const [isVisible, setIsVisible] = useState(true)
   const [position, setPosition] = useState<[number, number, number] | null>(null)
   const [rotation, setRotation] = useState<[number, number, number, number] | null>(null)
@@ -99,7 +100,7 @@ export default function Inspector({
   const [animationEndFrame, setAnimationEndFrame] = useState<number>(120)
   const [animationStep, setAnimationStep] = useState<number>(1)
   const [animationTurns, setAnimationTurns] = useState<number>(1.0)
-  const [animationRadius, setAnimationRadius] = useState<string>('')
+  const [animationRadius, setAnimationRadius] = useState<string>('5')
   const [animationPhaseDeg, setAnimationPhaseDeg] = useState<number>(0.0)
 
   const availableLookAtTargets = lookAtTargets.filter((t) => t.id !== selected?.id && t.type !== 'image')
@@ -122,11 +123,7 @@ export default function Inspector({
           ? fetchCameraElementMeta
           : isImage
             ? fetchImageElementMeta
-          : null
-    if (!fetchMeta) {
-      setPointSize(null)
-      return
-    }
+            : fetchElementMeta
 
     if (!enabled) return
     fetchMeta(selected.id, sample)
@@ -174,6 +171,7 @@ export default function Inspector({
         const fallback =
           mode === 'depth' ? DEFAULT_DEPTH_COLORMAP : mode === 'height' ? DEFAULT_HEIGHT_COLORMAP : DEFAULT_HEIGHT_COLORMAP
         setColorMap((vis.colorMap as ColormapId) ?? fallback)
+        setShowBounds(Boolean(vis.showBounds))
         if (vis.solidColor) {
           // assume [r,g,b] floats 0..1
           const c = vis.solidColor
@@ -187,9 +185,10 @@ export default function Inspector({
       } else {
         setColorMode('logged')
         setColorMap(DEFAULT_HEIGHT_COLORMAP)
+        setShowBounds(false)
       }
     } catch {}
-  }, [enabled, selected?.id, isPointCloud, isGaussians, isCamera, isImage, sample?.frame, sample?.timestamp])
+  }, [enabled, selected?.id, isPointCloud, isGaussians, isCamera, isImage, sample?.frame, sample?.timestamp, sample?.timeline, sample?.time])
 
   useEffect(() => {
     try {
@@ -210,7 +209,7 @@ export default function Inspector({
       if (!anyWin.__begira_local_pose) return
       delete anyWin.__begira_local_pose[selected.id]
     } catch {}
-  }, [enabled, selected?.id, sample?.frame, sample?.timestamp])
+  }, [enabled, selected?.id, sample?.frame, sample?.timestamp, sample?.timeline, sample?.time])
 
   useEffect(() => {
     const handler = () => {
@@ -261,26 +260,33 @@ export default function Inspector({
     mode: ColorMode,
     hexColor?: string | null,
     mapId: ColormapId = DEFAULT_HEIGHT_COLORMAP,
+    showBoundsOverride?: boolean,
   ) => {
     try {
       const anyWin = window as any
       anyWin.__begira_visual_override = anyWin.__begira_visual_override || {}
-      if (mode === 'logged') {
-        // clear override
+      const prev = (anyWin.__begira_visual_override[id] ?? {}) as any
+      const showBounds = showBoundsOverride !== undefined ? Boolean(showBoundsOverride) : Boolean(prev.showBounds)
+      const obj: any = { ...prev, colorMode: mode, showBounds }
+      if (mode === 'solid' && hexColor) {
+        // convert #rrggbb to [r,g,b] floats
+        const c = hexColor.replace('#', '')
+        const r = parseInt(c.substring(0, 2), 16) / 255
+        const g = parseInt(c.substring(2, 4), 16) / 255
+        const b = parseInt(c.substring(4, 6), 16) / 255
+        obj.solidColor = [r, g, b]
+      } else {
+        delete obj.solidColor
+      }
+      if (mode === 'height' || mode === 'depth') {
+        obj.colorMap = mapId
+      } else {
+        delete obj.colorMap
+      }
+
+      if (mode === 'logged' && !showBounds) {
         delete anyWin.__begira_visual_override[id]
       } else {
-        const obj: any = { colorMode: mode }
-        if (mode === 'solid' && hexColor) {
-          // convert #rrggbb to [r,g,b] floats
-          const c = hexColor.replace('#', '')
-          const r = parseInt(c.substring(0, 2), 16) / 255
-          const g = parseInt(c.substring(2, 4), 16) / 255
-          const b = parseInt(c.substring(4, 6), 16) / 255
-          obj.solidColor = [r, g, b]
-        }
-        if (mode === 'height' || mode === 'depth') {
-          obj.colorMap = mapId
-        }
         anyWin.__begira_visual_override[id] = obj
       }
       // notify viewers to re-read overrides and re-render
@@ -411,7 +417,7 @@ export default function Inspector({
       cancelled = true
       window.clearInterval(id)
     }
-  }, [selected?.id, sample?.frame, sample?.timestamp])
+  }, [selected?.id, sample?.frame, sample?.timestamp, sample?.timeline, sample?.time])
 
   useEffect(() => {
     if (!selected || !position || !rotation) return
@@ -443,13 +449,9 @@ export default function Inspector({
       setLookAtTargetId('')
       return
     }
-    if (availableLookAtTargets.length === 0) {
-      setLookAtTargetId('')
-      return
-    }
     setLookAtTargetId((prev) => {
       if (prev && availableLookAtTargets.some((t) => t.id === prev)) return prev
-      return availableLookAtTargets[0].id
+      return ''
     })
   }, [isCamera, selected?.id, availableLookAtTargets])
 
@@ -471,6 +473,7 @@ export default function Inspector({
             if (prev && availableLookAtTargets.some((t) => t.id === prev)) return prev
             return availableLookAtTargets[0]?.id ?? ''
           })
+          setAnimationRadius('5')
           return
         }
         setAnimationTargetId(track.targetId)
@@ -698,6 +701,7 @@ export default function Inspector({
               disabled={availableLookAtTargets.length === 0}
               style={{ flex: 1, minWidth: 0 }}
             >
+              <option value="">(select 3D object)</option>
               {availableLookAtTargets.length === 0 && <option value="">(no available 3D objects)</option>}
               {availableLookAtTargets.map((t) => (
                 <option key={t.id} value={t.id}>
@@ -715,13 +719,6 @@ export default function Inspector({
       <div className="inspect-card">
         <div className="inspect-label">Transform</div>
         <div className="panel-subtitle">Use the 3D viewport toolbar to switch Move, Rotate, and Animate modes.</div>
-        {isCamera && (
-          <div className="pill-row" style={{ marginTop: 8 }}>
-            <button className={`pill-btn${activeCameraId === selected.id ? ' active' : ''}`} onClick={() => onSetActiveCamera(activeCameraId === selected.id ? null : selected.id)}>
-              {activeCameraId === selected.id ? 'Stop View Sync' : 'Sync 3D View'}
-            </button>
-          </div>
-        )}
 
         <div style={{ marginTop: 10 }}>
           <div className="inspect-label">Position</div>
@@ -976,7 +973,7 @@ export default function Inspector({
         </div>
       )}
 
-      {(isPointCloud || isGaussians || isImage) && (
+      {(isPointCloud || isGaussians || isImage || isBox3D || isEllipsoid3D) && (
         <div className="inspect-card">
           {isPointCloud && selected.summary?.pointCount !== undefined && (
             <div style={{ marginBottom: 6 }}>
@@ -1006,6 +1003,20 @@ export default function Inspector({
                 Mime
               </div>
               <div className="inspect-value inspect-mono">{imgMime ?? '?'}</div>
+            </>
+          )}
+
+          {isBox3D && Array.isArray((selected as any).size) && (
+            <>
+              <div className="inspect-label">Box Size</div>
+              <div className="inspect-value">{(selected as any).size.map((v: number) => Number(v).toFixed(3)).join(' x ')}</div>
+            </>
+          )}
+
+          {isEllipsoid3D && Array.isArray((selected as any).radii) && (
+            <>
+              <div className="inspect-label">Ellipsoid Radii</div>
+              <div className="inspect-value">{(selected as any).radii.map((v: number) => Number(v).toFixed(3)).join(' x ')}</div>
             </>
           )}
         </div>
@@ -1073,6 +1084,19 @@ export default function Inspector({
               )
             })}
           </div>
+
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, marginTop: 10 }}>
+            <input
+              type="checkbox"
+              checked={showBounds}
+              onChange={(e) => {
+                const checked = e.target.checked
+                setShowBounds(checked)
+                setVisualOverrideForElement(selected.id, colorMode, solidColor, colorMap, checked)
+              }}
+            />
+            Show boundaries
+          </label>
 
           {colorMode === 'solid' && (
             <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'center' }}>

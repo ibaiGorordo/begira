@@ -8,7 +8,7 @@ export type UseGaussiansState =
   | { status: 'ready'; meta: GaussianSplatElementMeta; decoded: DecodedGaussians }
 
 function sampleDep(sample?: SampleQuery): string {
-  return `${sample?.frame ?? 'na'}|${sample?.timestamp ?? 'na'}`
+  return `${sample?.timeline ?? 'na'}|${sample?.time ?? 'na'}|${sample?.frame ?? 'na'}|${sample?.timestamp ?? 'na'}`
 }
 
 export function useGaussians(elementId: string, sample?: SampleQuery, enabled = true): UseGaussiansState {

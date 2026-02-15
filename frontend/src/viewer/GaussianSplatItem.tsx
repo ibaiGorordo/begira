@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useGaussians } from './useGaussians'
-import { SplatMesh, dyno, type SplatTransformer } from '@sparkjsdev/spark'
+import { SparkRenderer, SplatMesh, dyno, type SplatTransformer } from '@sparkjsdev/spark'
 import { COLORMAPS, DEFAULT_DEPTH_COLORMAP, DEFAULT_HEIGHT_COLORMAP, sampleColormap, type ColormapDef, type ColormapId } from './colormaps'
 import { useThree, useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
@@ -14,6 +14,37 @@ export type GaussianSplatItemProps = {
   sample?: SampleQuery
   enabled?: boolean
   onRegisterObject?: (id: string, obj: THREE.Object3D | null) => void
+}
+
+const SPARK_DEPTH_PATCHED = '__begiraSparkDepthPatched'
+const SPARK_DEPTH_PREPASS_FLAG = '__begira_spark_depth_prepass'
+
+function patchSparkDepthBehavior(root: THREE.Object3D | null): void {
+  if (!root) return
+  root.traverse((obj) => {
+    if (!(obj instanceof SparkRenderer)) return
+    const renderer = obj as SparkRenderer & Record<string, unknown>
+    if (renderer[SPARK_DEPTH_PATCHED]) return
+    const originalOnBeforeRender = renderer.onBeforeRender?.bind(renderer)
+    renderer.onBeforeRender = (rendererArg, sceneArg, cameraArg) => {
+      if (originalOnBeforeRender) {
+        originalOnBeforeRender(rendererArg, sceneArg, cameraArg)
+      }
+      const sparkMat = (renderer as any).material
+      if (sparkMat) {
+        const depthPrepass = (window as any)[SPARK_DEPTH_PREPASS_FLAG] === true
+        sparkMat.transparent = true
+        sparkMat.depthTest = true
+        sparkMat.depthWrite = depthPrepass
+        sparkMat.colorWrite = !depthPrepass
+      }
+      const uniforms = (renderer as any).uniforms
+      if (uniforms?.stochastic) {
+        uniforms.stochastic.value = false
+      }
+    }
+    renderer[SPARK_DEPTH_PATCHED] = true
+  })
 }
 
 export default function GaussianSplatItem({
@@ -46,7 +77,10 @@ export default function GaussianSplatItem({
     groupRef.current.quaternion.set(rot[0], rot[1], rot[2], rot[3]).normalize()
     groupRef.current.userData = { ...(groupRef.current.userData ?? {}), centerOffset: c.clone() }
   }, [meta])
-  const { camera, size } = useThree()
+  const { camera, size, scene } = useThree()
+  useEffect(() => {
+    patchSparkDepthBehavior(scene)
+  }, [scene])
   // We'll keep two meshes for simple LOD switching
   const splatHighRef = useRef<SplatMesh | null>(null)
   const splatLowRef = useRef<SplatMesh | null>(null)
@@ -1102,6 +1136,7 @@ export default function GaussianSplatItem({
 
   // Throttled per-frame LOD selection based on camera distance
   const frameCounter = useRef(0)
+  const sparkPatchTickRef = useRef(0)
   // helper to publish LOD status to global registry for the debug overlay
   const publishLOD = (level: 'high' | 'medium' | 'low') => {
     try {
@@ -1122,6 +1157,10 @@ export default function GaussianSplatItem({
   useFrame(() => {
     const group = groupRef.current
     if (!group || !camera) return
+    sparkPatchTickRef.current = (sparkPatchTickRef.current + 1) % 30
+    if (sparkPatchTickRef.current === 0) {
+      patchSparkDepthBehavior(scene)
+    }
 
     try {
       const local = (window as any).__begira_local_pose?.[elementId]

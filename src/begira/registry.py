@@ -25,13 +25,15 @@ from .elements import (
     Box3DElement,
     Ellipsoid3DElement,
 )
-from .timeline import WriteTarget, ElementTemporalRecord
+from .timeline import WriteTarget, ElementTemporalRecord, TimelineKind
 
 class InMemoryRegistry:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._elements: dict[str, ElementBase] = {}
         self._timeline: dict[str, ElementTemporalRecord[ElementBase]] = {}
+        self._timeline_axes: dict[str, TimelineKind] = {}
+        self._timeline_bounds: dict[str, tuple[float, float]] = {}
         self._camera_animations: dict[str, CameraAnimationTrack] = {}
         self._global_revision = 0
         # Deterministic palette colors for point clouds that don't provide per-point colors.
@@ -128,20 +130,126 @@ class InMemoryRegistry:
         static: bool = False,
         frame: int | None = None,
         timestamp: float | None = None,
+        timeline: str | None = None,
+        timeline_kind: TimelineKind | None = None,
+        timeline_value: float | None = None,
     ) -> WriteTarget:
         frame_v, ts_v = self._validate_sample_query(frame, timestamp)
-        if static and (frame_v is not None or ts_v is not None):
-            raise ValueError("static=True cannot be combined with frame or timestamp")
+        timeline_name = self._normalize_timeline_name(timeline)
+        if static and (frame_v is not None or ts_v is not None or timeline_name is not None):
+            raise ValueError("static=True cannot be combined with temporal fields")
+
+        if timeline_name is not None:
+            if timeline_value is None:
+                raise ValueError("timeline writes require a time value")
+
+            kind = timeline_kind
+            existing_kind = self._timeline_axes.get(timeline_name)
+            if kind is None:
+                kind = existing_kind
+            if kind is None:
+                raise ValueError("timeline_kind is required for first write to a timeline")
+            if existing_kind is not None and existing_kind != kind:
+                raise ValueError(f"Timeline '{timeline_name}' already exists with kind '{existing_kind}'")
+
+            if frame_v is not None:
+                if kind != "sequence" or int(frame_v) != int(timeline_value):
+                    raise ValueError("timeline sequence value conflicts with frame value")
+            if ts_v is not None:
+                if kind != "timestamp" or abs(float(ts_v) - float(timeline_value)) > 1e-9:
+                    raise ValueError("timeline timestamp value conflicts with timestamp value")
+
+            if kind == "sequence":
+                frame_key = int(timeline_value)
+                self._register_timeline_sample_locked(timeline_name, kind, float(frame_key))
+                return WriteTarget(
+                    axis="frame",
+                    key=frame_key,
+                    auto=False,
+                    timeline_name=timeline_name,
+                    timeline_kind=kind,
+                )
+
+            ts_key = float(timeline_value)
+            if not np.isfinite(ts_key):
+                raise ValueError("timeline timestamp must be finite")
+            self._register_timeline_sample_locked(timeline_name, kind, ts_key)
+            return WriteTarget(
+                axis="timestamp",
+                key=ts_key,
+                auto=False,
+                timeline_name=timeline_name,
+                timeline_kind=kind,
+            )
 
         if static:
             return WriteTarget(axis=None, key=None, auto=False)
         if frame_v is not None:
-            return WriteTarget(axis="frame", key=frame_v, auto=False)
+            self._register_timeline_sample_locked("frame", "sequence", float(frame_v))
+            return WriteTarget(axis="frame", key=frame_v, auto=False, timeline_name="frame", timeline_kind="sequence")
         if ts_v is not None:
-            return WriteTarget(axis="timestamp", key=ts_v, auto=False)
+            self._register_timeline_sample_locked("timestamp", "timestamp", float(ts_v))
+            return WriteTarget(
+                axis="timestamp",
+                key=ts_v,
+                auto=False,
+                timeline_name="timestamp",
+                timeline_kind="timestamp",
+            )
 
         # Default behavior: timeless write unless time axis is explicitly provided.
         return WriteTarget(axis=None, key=None, auto=False)
+
+    @staticmethod
+    def _normalize_timeline_name(timeline: str | None) -> str | None:
+        if timeline is None:
+            return None
+        txt = str(timeline).strip()
+        if not txt:
+            raise ValueError("timeline name cannot be empty")
+        return txt
+
+    def _register_timeline_sample_locked(self, timeline_name: str, kind: TimelineKind, value: float) -> None:
+        existing_kind = self._timeline_axes.get(timeline_name)
+        if existing_kind is None:
+            self._timeline_axes[timeline_name] = kind
+        elif existing_kind != kind:
+            raise ValueError(f"Timeline '{timeline_name}' already exists with kind '{existing_kind}'")
+
+        prev = self._timeline_bounds.get(timeline_name)
+        if prev is None:
+            self._timeline_bounds[timeline_name] = (float(value), float(value))
+            return
+        lo, hi = prev
+        self._timeline_bounds[timeline_name] = (min(float(value), lo), max(float(value), hi))
+
+    def _resolve_sample_query_locked(
+        self,
+        *,
+        frame: int | None = None,
+        timestamp: float | None = None,
+        timeline: str | None = None,
+        time_value: float | None = None,
+    ) -> tuple[int | None, float | None]:
+        frame_v, ts_v = self._validate_sample_query(frame, timestamp)
+        timeline_name = self._normalize_timeline_name(timeline)
+
+        if timeline_name is not None or time_value is not None:
+            if frame_v is not None or ts_v is not None:
+                raise ValueError("Cannot query with both frame/timestamp and timeline/time")
+            if timeline_name is None or time_value is None:
+                raise ValueError("timeline and time must be provided together")
+            kind = self._timeline_axes.get(timeline_name)
+            if kind is None:
+                raise ValueError(f"Unknown timeline: {timeline_name}")
+            if kind == "sequence":
+                return int(time_value), None
+            ts_q = float(time_value)
+            if not np.isfinite(ts_q):
+                raise ValueError("time must be finite")
+            return None, ts_q
+
+        return frame_v, ts_v
 
     def _get_record_locked(self, element_id: str) -> ElementTemporalRecord[ElementBase]:
         record = self._timeline.get(element_id)
@@ -695,49 +803,68 @@ class InMemoryRegistry:
 
     def timeline_info(self) -> dict[str, object]:
         with self._lock:
-            frame_min: int | None = None
-            frame_max: int | None = None
-            ts_min: float | None = None
-            ts_max: float | None = None
+            axes: list[dict[str, object]] = []
+            latest: dict[str, float | None] = {}
 
-            for record in self._timeline.values():
-                fb = record.samples.frame_bounds()
-                if fb is not None:
-                    lo, hi = fb
-                    frame_min = lo if frame_min is None else min(frame_min, lo)
-                    frame_max = hi if frame_max is None else max(frame_max, hi)
+            for timeline_name, kind in self._timeline_axes.items():
+                bounds = self._timeline_bounds.get(timeline_name)
+                has_data = bounds is not None
+                min_v = float(bounds[0]) if bounds is not None else None
+                max_v = float(bounds[1]) if bounds is not None else None
+                if kind == "sequence":
+                    min_val: int | float | None = int(min_v) if min_v is not None else None
+                    max_val: int | float | None = int(max_v) if max_v is not None else None
+                else:
+                    min_val = min_v
+                    max_val = max_v
+                axes.append(
+                    {
+                        "axis": timeline_name,
+                        "kind": kind,
+                        "min": min_val,
+                        "max": max_val,
+                        "hasData": has_data,
+                    }
+                )
+                latest[timeline_name] = max_val
 
-                tb = record.samples.timestamp_bounds()
-                if tb is not None:
-                    lo, hi = tb
-                    ts_min = lo if ts_min is None else min(ts_min, lo)
-                    ts_max = hi if ts_max is None else max(ts_max, hi)
+            if "frame" not in latest:
+                latest["frame"] = None
+            if "timestamp" not in latest:
+                latest["timestamp"] = None
+
+            default_axis: str | None = None
+            for axis in axes:
+                if axis.get("kind") == "sequence" and axis.get("hasData"):
+                    default_axis = str(axis.get("axis"))
+                    break
+            if default_axis is None:
+                for axis in axes:
+                    if axis.get("hasData"):
+                        default_axis = str(axis.get("axis"))
+                        break
 
             return {
-                "defaultAxis": "frame",
-                "axes": [
-                    {
-                        "axis": "frame",
-                        "min": frame_min,
-                        "max": frame_max,
-                        "hasData": frame_min is not None,
-                    },
-                    {
-                        "axis": "timestamp",
-                        "min": ts_min,
-                        "max": ts_max,
-                        "hasData": ts_min is not None,
-                    },
-                ],
-                "latest": {
-                    "frame": frame_max,
-                    "timestamp": ts_max,
-                },
+                "defaultAxis": default_axis,
+                "axes": axes,
+                "latest": latest,
             }
 
-    def list_elements(self, *, frame: int | None = None, timestamp: float | None = None) -> list[ElementBase]:
+    def list_elements(
+        self,
+        *,
+        frame: int | None = None,
+        timestamp: float | None = None,
+        timeline: str | None = None,
+        time_value: float | None = None,
+    ) -> list[ElementBase]:
         with self._lock:
-            frame_v, ts_v = self._validate_sample_query(frame, timestamp)
+            frame_v, ts_v = self._resolve_sample_query_locked(
+                frame=frame,
+                timestamp=timestamp,
+                timeline=timeline,
+                time_value=time_value,
+            )
             if frame_v is None and ts_v is None:
                 return [e for e in self._elements.values() if not getattr(e, "deleted", False)]
 
@@ -751,9 +878,22 @@ class InMemoryRegistry:
                 out.append(e)
             return out
 
-    def get_element(self, element_id: str, *, frame: int | None = None, timestamp: float | None = None) -> ElementBase | None:
+    def get_element(
+        self,
+        element_id: str,
+        *,
+        frame: int | None = None,
+        timestamp: float | None = None,
+        timeline: str | None = None,
+        time_value: float | None = None,
+    ) -> ElementBase | None:
         with self._lock:
-            frame_v, ts_v = self._validate_sample_query(frame, timestamp)
+            frame_v, ts_v = self._resolve_sample_query_locked(
+                frame=frame,
+                timestamp=timestamp,
+                timeline=timeline,
+                time_value=time_value,
+            )
             if frame_v is None and ts_v is None:
                 return self._elements.get(element_id)
             return self._sample_element_locked(element_id, frame=frame_v, timestamp=ts_v)
@@ -779,12 +919,22 @@ class InMemoryRegistry:
         static: bool = False,
         frame: int | None = None,
         timestamp: float | None = None,
+        timeline: str | None = None,
+        timeline_kind: TimelineKind | None = None,
+        timeline_value: float | None = None,
     ) -> ElementBase:
         with self._lock:
             prev = self._elements.get(element_id)
             if prev is None:
                 raise KeyError(element_id)
-            if getattr(prev, "deleted", False) and frame is None and timestamp is None and not static:
+            if (
+                getattr(prev, "deleted", False)
+                and frame is None
+                and timestamp is None
+                and timeline is None
+                and timeline_value is None
+                and not static
+            ):
                 return prev
             updated = self.update_element_meta(
                 element_id,
@@ -792,6 +942,9 @@ class InMemoryRegistry:
                 static=static,
                 frame=frame,
                 timestamp=timestamp,
+                timeline=timeline,
+                timeline_kind=timeline_kind,
+                timeline_value=timeline_value,
             )
             if isinstance(prev, CameraElement):
                 self._camera_animations.pop(element_id, None)
@@ -821,13 +974,23 @@ class InMemoryRegistry:
         static: bool = False,
         frame: int | None = None,
         timestamp: float | None = None,
+        timeline: str | None = None,
+        timeline_kind: TimelineKind | None = None,
+        timeline_value: float | None = None,
     ) -> ElementBase:
         with self._lock:
             latest = self._elements.get(element_id)
             if latest is None:
                 raise KeyError(element_id)
 
-            target = self._resolve_write_target_locked(static=static, frame=frame, timestamp=timestamp)
+            target = self._resolve_write_target_locked(
+                static=static,
+                frame=frame,
+                timestamp=timestamp,
+                timeline=timeline,
+                timeline_kind=timeline_kind,
+                timeline_value=timeline_value,
+            )
             prev = self._base_element_for_write_locked(element_id, target)
             if prev is None:
                 raise KeyError(element_id)
@@ -971,6 +1134,9 @@ class InMemoryRegistry:
         static: bool = False,
         frame: int | None = None,
         timestamp: float | None = None,
+        timeline: str | None = None,
+        timeline_kind: TimelineKind | None = None,
+        timeline_value: float | None = None,
     ) -> PointCloudElement:
         updated = self.update_element_meta(
             element_id,
@@ -978,6 +1144,9 @@ class InMemoryRegistry:
             static=static,
             frame=frame,
             timestamp=timestamp,
+            timeline=timeline,
+            timeline_kind=timeline_kind,
+            timeline_value=timeline_value,
         )
         if not isinstance(updated, PointCloudElement):
             raise KeyError(element_id)
@@ -994,6 +1163,9 @@ class InMemoryRegistry:
         static: bool = False,
         frame: int | None = None,
         timestamp: float | None = None,
+        timeline: str | None = None,
+        timeline_kind: TimelineKind | None = None,
+        timeline_value: float | None = None,
     ) -> PointCloudElement:
         # Validate + normalize early.
         pos = np.asarray(positions)
@@ -1017,7 +1189,14 @@ class InMemoryRegistry:
             if element_id is None:
                 element_id = uuid.uuid4().hex
 
-            target = self._resolve_write_target_locked(static=static, frame=frame, timestamp=timestamp)
+            target = self._resolve_write_target_locked(
+                static=static,
+                frame=frame,
+                timestamp=timestamp,
+                timeline=timeline,
+                timeline_kind=timeline_kind,
+                timeline_value=timeline_value,
+            )
             latest = self._elements.get(element_id)
             base = self._base_element_for_write_locked(element_id, target)
             base_pc = base if isinstance(base, PointCloudElement) else None
@@ -1080,6 +1259,9 @@ class InMemoryRegistry:
         static: bool = False,
         frame: int | None = None,
         timestamp: float | None = None,
+        timeline: str | None = None,
+        timeline_kind: TimelineKind | None = None,
+        timeline_value: float | None = None,
     ) -> GaussianSplatElement:
         updated = self.update_element_meta(
             element_id,
@@ -1087,6 +1269,9 @@ class InMemoryRegistry:
             static=static,
             frame=frame,
             timestamp=timestamp,
+            timeline=timeline,
+            timeline_kind=timeline_kind,
+            timeline_value=timeline_value,
         )
         if not isinstance(updated, GaussianSplatElement):
             raise KeyError(element_id)
@@ -1106,12 +1291,22 @@ class InMemoryRegistry:
         static: bool = False,
         frame: int | None = None,
         timestamp: float | None = None,
+        timeline: str | None = None,
+        timeline_kind: TimelineKind | None = None,
+        timeline_value: float | None = None,
     ) -> GaussianSplatElement:
         with self._lock:
             if element_id is None:
                 element_id = uuid.uuid4().hex
 
-            target = self._resolve_write_target_locked(static=static, frame=frame, timestamp=timestamp)
+            target = self._resolve_write_target_locked(
+                static=static,
+                frame=frame,
+                timestamp=timestamp,
+                timeline=timeline,
+                timeline_kind=timeline_kind,
+                timeline_value=timeline_value,
+            )
             latest = self._elements.get(element_id)
             base = self._base_element_for_write_locked(element_id, target)
             base_gs = base if isinstance(base, GaussianSplatElement) else None
@@ -1179,6 +1374,9 @@ class InMemoryRegistry:
         static: bool = False,
         frame: int | None = None,
         timestamp: float | None = None,
+        timeline: str | None = None,
+        timeline_kind: TimelineKind | None = None,
+        timeline_value: float | None = None,
     ) -> CameraElement:
         k = self._normalize_intrinsic_matrix(intrinsic_matrix)
 
@@ -1186,7 +1384,14 @@ class InMemoryRegistry:
             if element_id is None:
                 element_id = uuid.uuid4().hex
 
-            target = self._resolve_write_target_locked(static=static, frame=frame, timestamp=timestamp)
+            target = self._resolve_write_target_locked(
+                static=static,
+                frame=frame,
+                timestamp=timestamp,
+                timeline=timeline,
+                timeline_kind=timeline_kind,
+                timeline_value=timeline_value,
+            )
             latest = self._elements.get(element_id)
             base = self._base_element_for_write_locked(element_id, target)
             base_cam = base if isinstance(base, CameraElement) else None
@@ -1271,6 +1476,9 @@ class InMemoryRegistry:
         static: bool = False,
         frame: int | None = None,
         timestamp: float | None = None,
+        timeline: str | None = None,
+        timeline_kind: TimelineKind | None = None,
+        timeline_value: float | None = None,
     ) -> Box3DElement:
         size_v = self._normalize_positive_vec3(size, name="size")
         color_v = self._normalize_color3(color, name="color")
@@ -1279,7 +1487,14 @@ class InMemoryRegistry:
             if element_id is None:
                 element_id = uuid.uuid4().hex
 
-            target = self._resolve_write_target_locked(static=static, frame=frame, timestamp=timestamp)
+            target = self._resolve_write_target_locked(
+                static=static,
+                frame=frame,
+                timestamp=timestamp,
+                timeline=timeline,
+                timeline_kind=timeline_kind,
+                timeline_value=timeline_value,
+            )
             latest = self._elements.get(element_id)
             base = self._base_element_for_write_locked(element_id, target)
             base_box = base if isinstance(base, Box3DElement) else None
@@ -1334,6 +1549,9 @@ class InMemoryRegistry:
         static: bool = False,
         frame: int | None = None,
         timestamp: float | None = None,
+        timeline: str | None = None,
+        timeline_kind: TimelineKind | None = None,
+        timeline_value: float | None = None,
     ) -> Ellipsoid3DElement:
         radii_v = self._normalize_positive_vec3(radii, name="radii")
         color_v = self._normalize_color3(color, name="color")
@@ -1342,7 +1560,14 @@ class InMemoryRegistry:
             if element_id is None:
                 element_id = uuid.uuid4().hex
 
-            target = self._resolve_write_target_locked(static=static, frame=frame, timestamp=timestamp)
+            target = self._resolve_write_target_locked(
+                static=static,
+                frame=frame,
+                timestamp=timestamp,
+                timeline=timeline,
+                timeline_kind=timeline_kind,
+                timeline_value=timeline_value,
+            )
             latest = self._elements.get(element_id)
             base = self._base_element_for_write_locked(element_id, target)
             base_ellipsoid = base if isinstance(base, Ellipsoid3DElement) else None
@@ -1406,6 +1631,9 @@ class InMemoryRegistry:
         static: bool = False,
         frame: int | None = None,
         timestamp: float | None = None,
+        timeline: str | None = None,
+        timeline_kind: TimelineKind | None = None,
+        timeline_value: float | None = None,
     ) -> ImageElement:
         if not image_bytes:
             raise ValueError("image payload is empty")
@@ -1423,7 +1651,14 @@ class InMemoryRegistry:
             if element_id is None:
                 element_id = uuid.uuid4().hex
 
-            target = self._resolve_write_target_locked(static=static, frame=frame, timestamp=timestamp)
+            target = self._resolve_write_target_locked(
+                static=static,
+                frame=frame,
+                timestamp=timestamp,
+                timeline=timeline,
+                timeline_kind=timeline_kind,
+                timeline_value=timeline_value,
+            )
             latest = self._elements.get(element_id)
             base = self._base_element_for_write_locked(element_id, target)
             base_img = base if isinstance(base, ImageElement) else None

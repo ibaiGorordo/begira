@@ -7,7 +7,7 @@ export type UseCameraState =
   | { status: 'ready'; meta: CameraElementMeta }
 
 function sampleDep(sample?: SampleQuery): string {
-  return `${sample?.frame ?? 'na'}|${sample?.timestamp ?? 'na'}`
+  return `${sample?.timeline ?? 'na'}|${sample?.time ?? 'na'}|${sample?.frame ?? 'na'}|${sample?.timestamp ?? 'na'}`
 }
 
 export function useCamera(elementId: string, sample?: SampleQuery, enabled = true): UseCameraState {

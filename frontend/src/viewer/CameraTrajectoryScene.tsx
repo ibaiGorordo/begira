@@ -1,6 +1,7 @@
 import { Html } from '@react-three/drei'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
+import { CAMERA_GIZMO_OVERLAY_LAYER } from './CameraScene'
 import type { CameraAnimationTrack, CameraAnimationTrajectory } from './api'
 
 type Props = {
@@ -56,6 +57,7 @@ export default function CameraTrajectoryScene({
   onRegisterKeyObject,
 }: Props) {
   const [hoveredKeyFrame, setHoveredKeyFrame] = useState<number | null>(null)
+  const groupRef = useRef<THREE.Group | null>(null)
 
   const lineGeometry = useMemo(() => {
     if (!trajectory) return null
@@ -67,6 +69,13 @@ export default function CameraTrajectoryScene({
       if (lineGeometry) lineGeometry.dispose()
     }
   }, [lineGeometry])
+
+  useEffect(() => {
+    if (!groupRef.current) return
+    groupRef.current.traverse((obj) => {
+      obj.layers.set(CAMERA_GIZMO_OVERLAY_LAYER)
+    })
+  }, [track, trajectory, lineGeometry])
 
   const frameToPosition = useMemo(() => {
     const out = new Map<number, [number, number, number]>()
@@ -96,7 +105,7 @@ export default function CameraTrajectoryScene({
   }, [frameToPosition, track])
 
   const markerRadius = useMemo(() => {
-    if (!trajectory || trajectory.positions.length < 2) return 0.075
+    if (!trajectory || trajectory.positions.length < 2) return 0.012
     const min = new THREE.Vector3(Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY)
     const max = new THREE.Vector3(Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY)
     for (const p of trajectory.positions) {
@@ -104,17 +113,17 @@ export default function CameraTrajectoryScene({
       max.max(new THREE.Vector3(p[0], p[1], p[2]))
     }
     const diag = max.sub(min).length()
-    return clamp(diag * 0.012, 0.06, 0.32)
+    return clamp(diag * 0.0018, 0.008, 0.03)
   }, [trajectory])
 
   if (!track || !trajectory || !lineGeometry) return null
 
   return (
-    <group>
+    <group ref={groupRef}>
       <lineSegments
         geometry={lineGeometry}
         frustumCulled={false}
-        renderOrder={950000}
+        renderOrder={4000}
         onPointerDown={(e) => {
           const mouseEvent = e.nativeEvent as PointerEvent
           if (!mouseEvent.shiftKey) return
@@ -122,7 +131,7 @@ export default function CameraTrajectoryScene({
           onShiftClickPath?.([e.point.x, e.point.y, e.point.z])
         }}
       >
-        <lineBasicMaterial color="#98c8ff" transparent opacity={0.95} depthTest={false} depthWrite={false} toneMapped={false} />
+        <lineBasicMaterial color="#98c8ff" transparent opacity={0.85} depthTest depthWrite={false} toneMapped={false} />
       </lineSegments>
       {keyMarkers.map((key) => {
         const selected = selectedKeyFrame === key.frame
@@ -132,7 +141,7 @@ export default function CameraTrajectoryScene({
             key={`key-${key.frame}`}
             ref={(obj) => onRegisterKeyObject?.(key.frame, obj)}
             position={key.position}
-            renderOrder={950100}
+            renderOrder={4010}
             frustumCulled={false}
             onPointerDown={(e) => {
               e.stopPropagation()
@@ -156,10 +165,10 @@ export default function CameraTrajectoryScene({
             <sphereGeometry args={[markerRadius, 18, 18]} />
             <meshBasicMaterial
               color={selected ? '#ffe7a8' : key.color}
-              depthTest={false}
+              depthTest
               depthWrite={false}
               transparent
-              opacity={selected || hovered ? 1.0 : 0.92}
+              opacity={selected || hovered ? 0.98 : 0.86}
               toneMapped={false}
             />
             {(selected || hovered) && (

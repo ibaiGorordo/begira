@@ -23,14 +23,18 @@ export type HierarchyProps = {
   onToggleViewVisibility: (viewId: string, visible: boolean) => void
   onDeleteView: (viewId: string) => void
   onMoveView: (viewId: string, direction: 'up' | 'down') => void
+  onAddCamera: () => void
+  onAdd3DView: () => void
 }
 
-type IconKind = 'view3d' | 'view2d' | 'pointcloud' | 'gaussians' | 'camera' | 'image'
+type IconKind = 'view3d' | 'view2d' | 'pointcloud' | 'gaussians' | 'camera' | 'image' | 'box3d' | 'ellipsoid3d'
 
 function iconKindForElement(type: ElementInfo['type']): IconKind {
   if (type === 'pointcloud') return 'pointcloud'
   if (type === 'gaussians') return 'gaussians'
   if (type === 'camera') return 'camera'
+  if (type === 'box3d') return 'box3d'
+  if (type === 'ellipsoid3d') return 'ellipsoid3d'
   return 'image'
 }
 
@@ -84,6 +88,24 @@ function MinimalIcon({ kind }: { kind: IconKind }) {
       </svg>
     )
   }
+  if (kind === 'box3d') {
+    return (
+      <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+        <path d="M5.6 7.3 L10 4.8 L14.4 7.3 L10 9.8 L5.6 7.3 Z" stroke="#4d74b8" strokeWidth="1.2" strokeLinejoin="round" />
+        <path d="M5.6 7.3 V12.8 L10 15.2 L14.4 12.8 V7.3" stroke="#4d74b8" strokeWidth="1.2" strokeLinejoin="round" />
+        <path d="M10 9.8 V15.2" stroke="#4d74b8" strokeWidth="1.2" />
+      </svg>
+    )
+  }
+  if (kind === 'ellipsoid3d') {
+    return (
+      <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+        <ellipse cx="10" cy="10" rx="5.5" ry="3.6" stroke="#7e64bf" strokeWidth="1.2" />
+        <ellipse cx="10" cy="10" rx="3.1" ry="5.2" stroke="#7e64bf" strokeWidth="1.2" />
+        <ellipse cx="10" cy="10" rx="5.2" ry="2.2" transform="rotate(32 10 10)" stroke="#7e64bf" strokeWidth="1.2" />
+      </svg>
+    )
+  }
   return (
     <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
       <rect x="3.8" y="4.4" width="12.4" height="11.2" rx="2" stroke="#8a6a2f" strokeWidth="1.3" />
@@ -105,9 +127,15 @@ export default function Hierarchy({
   onToggleViewVisibility,
   onDeleteView,
   onMoveView,
+  onAddCamera,
+  onAdd3DView,
 }: HierarchyProps) {
   const items = elements ?? []
   const byId = new Map(items.map((e) => [e.id, e]))
+  const closeAddMenu = (event: React.MouseEvent<HTMLButtonElement>) => {
+    const root = event.currentTarget.closest('details')
+    if (root) root.removeAttribute('open')
+  }
   const reorderableViewIds = views.filter((v) => v.canReorder).map((v) => v.id)
   const handleElementDragStart = (event: React.DragEvent<HTMLButtonElement>, element: ElementInfo) => {
     if (element.type !== 'camera') return
@@ -125,7 +153,36 @@ export default function Hierarchy({
       </div>
 
       <div className="section-card">
-        <div className="section-head">Hierarchy</div>
+        <div className="section-head" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+          <span>Hierarchy</span>
+          <details className="scene-add-menu">
+            <summary className="icon-btn" title="Add">
+              +
+            </summary>
+            <div className="scene-add-menu-popover">
+              <button
+                type="button"
+                className="toolbar-btn"
+                onClick={(event) => {
+                  closeAddMenu(event)
+                  onAddCamera()
+                }}
+              >
+                Add Camera
+              </button>
+              <button
+                type="button"
+                className="toolbar-btn"
+                onClick={(event) => {
+                  closeAddMenu(event)
+                  onAdd3DView()
+                }}
+              >
+                Add 3D View
+              </button>
+            </div>
+          </details>
+        </div>
         <div style={{ padding: 8, display: 'grid', gap: 8 }}>
           {views.map((view) => {
             const reorderIndex = reorderableViewIds.indexOf(view.id)

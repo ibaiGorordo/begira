@@ -23,15 +23,88 @@ from .server import create_app
 from .viewer_settings import VIEWER_SETTINGS
 
 
-@dataclass(frozen=True)
+@dataclass
 class BegiraServer:
     host: str
     port: int
     url: str
+    _active_timeline: tuple[str, str, float] | None = None
 
     def _as_client(self) -> BegiraClient:
         # Reuse HTTP endpoints for any "viewer settings" behavior.
         return BegiraClient(self.url.rstrip("/"))
+
+    def set_time(
+        self,
+        timeline: str,
+        *,
+        sequence: int | None = None,
+        timestamp: float | datetime | None = None,
+    ) -> None:
+        timeline_name = str(timeline).strip()
+        if not timeline_name:
+            raise ValueError("timeline cannot be empty")
+        has_sequence = sequence is not None
+        has_timestamp = timestamp is not None
+        if has_sequence == has_timestamp:
+            raise ValueError("Provide exactly one of sequence or timestamp")
+        if has_sequence:
+            self._active_timeline = (timeline_name, "sequence", float(int(sequence)))
+            return
+        ts_v = to_unix_seconds(timestamp)
+        if ts_v is None:
+            raise ValueError("timestamp must not be None")
+        self._active_timeline = (timeline_name, "timestamp", float(ts_v))
+
+    def set_times(
+        self,
+        timeline: str,
+        *,
+        sequence: int | None = None,
+        timestamp: float | datetime | None = None,
+    ) -> None:
+        self.set_time(timeline, sequence=sequence, timestamp=timestamp)
+
+    def clear_time(self) -> None:
+        self._active_timeline = None
+
+    def _effective_read_sample(
+        self,
+        *,
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+    ) -> tuple[int | None, float | None, str | None, float | None]:
+        frame_v = int(frame) if frame is not None else None
+        ts_v = to_unix_seconds(timestamp)
+        if frame_v is not None and ts_v is not None:
+            raise ValueError("Only one of frame or timestamp can be provided")
+        if frame_v is None and ts_v is None and self._active_timeline is not None:
+            return None, None, str(self._active_timeline[0]), float(self._active_timeline[2])
+        return frame_v, ts_v, None, None
+
+    def _effective_write_sample(
+        self,
+        *,
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        static: bool = False,
+    ) -> tuple[bool, int | None, float | None, str | None, str | None, float | None]:
+        frame_v = int(frame) if frame is not None else None
+        ts_v = to_unix_seconds(timestamp)
+        if frame_v is not None and ts_v is not None:
+            raise ValueError("Only one of frame or timestamp can be provided")
+        if static and (frame_v is not None or ts_v is not None):
+            raise ValueError("static=True cannot be combined with frame or timestamp")
+        if not static and frame_v is None and ts_v is None and self._active_timeline is not None:
+            return (
+                bool(static),
+                None,
+                None,
+                str(self._active_timeline[0]),
+                str(self._active_timeline[1]),
+                float(self._active_timeline[2]),
+            )
+        return bool(static), frame_v, ts_v, None, None, None
 
     def get_coordinate_convention(self, *, timeout_s: float = 10.0) -> CoordinateConvention:
         """Return the active viewer coordinate convention for this server."""
@@ -50,10 +123,13 @@ class BegiraServer:
         timeout_s: float = 10.0,
     ) -> dict:
         _ = timeout_s
+        frame_v, ts_v, timeline_v, time_v = self._effective_read_sample(frame=frame, timestamp=timestamp)
         e = REGISTRY.get_element(
             element_id,
-            frame=int(frame) if frame is not None else None,
-            timestamp=to_unix_seconds(timestamp),
+            frame=frame_v,
+            timestamp=ts_v,
+            timeline=timeline_v,
+            time_value=time_v,
         )
         if e is None:
             raise RuntimeError(f"Unknown element: {element_id}")
@@ -72,12 +148,20 @@ class BegiraServer:
         timeout_s: float = 10.0,
     ) -> None:
         _ = timeout_s
+        static_v, frame_v, ts_v, timeline_v, timeline_kind_v, timeline_value_v = self._effective_write_sample(
+            frame=frame,
+            timestamp=timestamp,
+            static=static,
+        )
         try:
             REGISTRY.delete_element(
                 element_id,
-                frame=int(frame) if frame is not None else None,
-                timestamp=to_unix_seconds(timestamp),
-                static=bool(static),
+                frame=frame_v,
+                timestamp=ts_v,
+                static=static_v,
+                timeline=timeline_v,
+                timeline_kind=timeline_kind_v,  # type: ignore[arg-type]
+                timeline_value=timeline_value_v,
             )
         except KeyError as e:
             raise RuntimeError(f"Unknown element: {element_id}") from e
@@ -93,13 +177,21 @@ class BegiraServer:
         timeout_s: float = 10.0,
     ) -> None:
         _ = timeout_s
+        static_v, frame_v, ts_v, timeline_v, timeline_kind_v, timeline_value_v = self._effective_write_sample(
+            frame=frame,
+            timestamp=timestamp,
+            static=static,
+        )
         try:
             REGISTRY.update_element_meta(
                 element_id,
                 visible=bool(visible),
-                frame=int(frame) if frame is not None else None,
-                timestamp=to_unix_seconds(timestamp),
-                static=bool(static),
+                frame=frame_v,
+                timestamp=ts_v,
+                static=static_v,
+                timeline=timeline_v,
+                timeline_kind=timeline_kind_v,  # type: ignore[arg-type]
+                timeline_value=timeline_value_v,
             )
         except KeyError as e:
             raise RuntimeError(f"Unknown element: {element_id}") from e
@@ -118,14 +210,22 @@ class BegiraServer:
         _ = timeout_s
         pos_v = tuple(float(x) for x in position) if position is not None else None
         rot_v = tuple(float(x) for x in rotation) if rotation is not None else None
+        static_v, frame_v, ts_v, timeline_v, timeline_kind_v, timeline_value_v = self._effective_write_sample(
+            frame=frame,
+            timestamp=timestamp,
+            static=static,
+        )
         try:
             REGISTRY.update_element_meta(
                 element_id,
                 position=pos_v,
                 rotation=rot_v,
-                frame=int(frame) if frame is not None else None,
-                timestamp=to_unix_seconds(timestamp),
-                static=bool(static),
+                frame=frame_v,
+                timestamp=ts_v,
+                static=static_v,
+                timeline=timeline_v,
+                timeline_kind=timeline_kind_v,  # type: ignore[arg-type]
+                timeline_value=timeline_value_v,
             )
         except KeyError as e:
             raise RuntimeError(f"Unknown element: {element_id}") from e
@@ -375,15 +475,23 @@ class BegiraServer:
                 positions = pos_attr
                 colors = col_attr
 
+        static_v, frame_v, ts_v, timeline_v, timeline_kind_v, timeline_value_v = self._effective_write_sample(
+            frame=frame,
+            timestamp=timestamp,
+            static=static,
+        )
         pc = REGISTRY.upsert_pointcloud(
             name=name,
             positions=positions,  # type: ignore[arg-type]
             colors=colors,
             point_size=point_size,
             element_id=element_id,
-            frame=int(frame) if frame is not None else None,
-            timestamp=to_unix_seconds(timestamp),
-            static=bool(static),
+            frame=frame_v,
+            timestamp=ts_v,
+            static=static_v,
+            timeline=timeline_v,
+            timeline_kind=timeline_kind_v,  # type: ignore[arg-type]
+            timeline_value=timeline_value_v,
         )
         return PointCloudHandle(pc.id, ops=self, element_type="pointcloud")
 
@@ -443,6 +551,11 @@ class BegiraServer:
         else:
             rotations = np.ascontiguousarray(rotations, dtype=np.float32)
 
+        static_v, frame_v, ts_v, timeline_v, timeline_kind_v, timeline_value_v = self._effective_write_sample(
+            frame=frame,
+            timestamp=timestamp,
+            static=static,
+        )
         gs = REGISTRY.upsert_gaussians(
             name=name,
             positions=pos,
@@ -451,9 +564,12 @@ class BegiraServer:
             scales=scales,
             rotations=rotations,
             element_id=element_id,
-            frame=int(frame) if frame is not None else None,
-            timestamp=to_unix_seconds(timestamp),
-            static=bool(static),
+            frame=frame_v,
+            timestamp=ts_v,
+            static=static_v,
+            timeline=timeline_v,
+            timeline_kind=timeline_kind_v,  # type: ignore[arg-type]
+            timeline_value=timeline_value_v,
         )
         return GaussianHandle(gs.id, ops=self, element_type="gaussians")
 
@@ -476,6 +592,11 @@ class BegiraServer:
     ) -> CameraHandle:
         """Log (add/update) a camera element."""
 
+        static_v, frame_v, ts_v, timeline_v, timeline_kind_v, timeline_value_v = self._effective_write_sample(
+            frame=frame,
+            timestamp=timestamp,
+            static=static,
+        )
         cam = REGISTRY.upsert_camera(
             name=name,
             position=(float(position[0]), float(position[1]), float(position[2])),
@@ -487,9 +608,12 @@ class BegiraServer:
             height=int(height) if height is not None else None,
             intrinsic_matrix=intrinsic_matrix,
             element_id=element_id,
-            frame=int(frame) if frame is not None else None,
-            timestamp=to_unix_seconds(timestamp),
-            static=bool(static),
+            frame=frame_v,
+            timestamp=ts_v,
+            static=static_v,
+            timeline=timeline_v,
+            timeline_kind=timeline_kind_v,  # type: ignore[arg-type]
+            timeline_value=timeline_value_v,
         )
         return CameraHandle(cam.id, ops=self, element_type="camera")
 
@@ -506,6 +630,11 @@ class BegiraServer:
         static: bool = False,
         element_id: str | None = None,
     ) -> Box3DHandle:
+        static_v, frame_v, ts_v, timeline_v, timeline_kind_v, timeline_value_v = self._effective_write_sample(
+            frame=frame,
+            timestamp=timestamp,
+            static=static,
+        )
         box = REGISTRY.upsert_box3d(
             name=name,
             size=size,  # type: ignore[arg-type]
@@ -513,9 +642,12 @@ class BegiraServer:
             position=(float(position[0]), float(position[1]), float(position[2])),
             rotation=(float(rotation[0]), float(rotation[1]), float(rotation[2]), float(rotation[3])),
             element_id=element_id,
-            frame=int(frame) if frame is not None else None,
-            timestamp=to_unix_seconds(timestamp),
-            static=bool(static),
+            frame=frame_v,
+            timestamp=ts_v,
+            static=static_v,
+            timeline=timeline_v,
+            timeline_kind=timeline_kind_v,  # type: ignore[arg-type]
+            timeline_value=timeline_value_v,
         )
         return Box3DHandle(box.id, ops=self, element_type="box3d")
 
@@ -532,6 +664,11 @@ class BegiraServer:
         static: bool = False,
         element_id: str | None = None,
     ) -> Ellipsoid3DHandle:
+        static_v, frame_v, ts_v, timeline_v, timeline_kind_v, timeline_value_v = self._effective_write_sample(
+            frame=frame,
+            timestamp=timestamp,
+            static=static,
+        )
         ellipsoid = REGISTRY.upsert_ellipsoid3d(
             name=name,
             radii=radii,  # type: ignore[arg-type]
@@ -539,9 +676,12 @@ class BegiraServer:
             position=(float(position[0]), float(position[1]), float(position[2])),
             rotation=(float(rotation[0]), float(rotation[1]), float(rotation[2]), float(rotation[3])),
             element_id=element_id,
-            frame=int(frame) if frame is not None else None,
-            timestamp=to_unix_seconds(timestamp),
-            static=bool(static),
+            frame=frame_v,
+            timestamp=ts_v,
+            static=static_v,
+            timeline=timeline_v,
+            timeline_kind=timeline_kind_v,  # type: ignore[arg-type]
+            timeline_value=timeline_value_v,
         )
         return Ellipsoid3DHandle(ellipsoid.id, ops=self, element_type="ellipsoid3d")
 
@@ -569,6 +709,11 @@ class BegiraServer:
             height=height,
             channels=channels,
         )
+        static_v, frame_v, ts_v, timeline_v, timeline_kind_v, timeline_value_v = self._effective_write_sample(
+            frame=frame,
+            timestamp=timestamp,
+            static=static,
+        )
         img = REGISTRY.upsert_image(
             name=name,
             image_bytes=data,
@@ -577,9 +722,12 @@ class BegiraServer:
             height=int(height),
             channels=int(channels),
             element_id=element_id,
-            frame=int(frame) if frame is not None else None,
-            timestamp=to_unix_seconds(timestamp),
-            static=bool(static),
+            frame=frame_v,
+            timestamp=ts_v,
+            static=static_v,
+            timeline=timeline_v,
+            timeline_kind=timeline_kind_v,  # type: ignore[arg-type]
+            timeline_value=timeline_value_v,
         )
         return ImageHandle(img.id, ops=self, element_type="image")
 
