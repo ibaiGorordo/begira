@@ -29,6 +29,7 @@ htmlcov/
 .vscode/
 
 # ---- Node / Frontend ----
+node_modules/
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
@@ -49,4 +50,3 @@ pnpm-debug.log*
 # frontend/package-lock.json
 # pnpm-lock.yaml
 # yarn.lock
-

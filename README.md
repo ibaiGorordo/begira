@@ -11,10 +11,18 @@ Minimal 3D viewer with a Python API and a React/Three.js frontend.
 - LOD for gaussians and focus on selection
 
 ## Repo layout
-- `src/begira/` → Python library (API server + launcher)
+- `src/begira/` → Python library
+  - `src/begira/core/` → domain model/state/timeline/registry
+  - `src/begira/api/` → HTTP API app, parsing, serializers, routes
+  - `src/begira/sdk/` → Python client + handles
+  - `src/begira/runtime/` → app/server/web mounting
+  - `src/begira/io/` → image + ply loaders/encoders
+  - legacy paths in `src/begira/*.py` are compatibility shims
 - `frontend/` → web viewer (Vite + React + three)
-  - `frontend/src/` → viewer code
-  - `frontend/dist/` → built static files (served by Python; not committed)
+  - `frontend/src/app/` → app shell + app-level runtime state
+  - `frontend/src/features/` → hierarchy/inspector/timeline/workspace/3d-view features
+  - `frontend/src/shared/api/` → API types and fetch clients
+  - `frontend/src/viewer/` → compatibility shims + legacy entry points
 - `examples/` → small runnable scripts
 
 ## Quickstart
@@ -47,6 +55,9 @@ npm install
 npm run build
 ```
 
+This writes the build directly into:
+`src/begira/_frontend/dist/`
+
 ## Dev mode (hot reload)
 
 Backend:
@@ -67,7 +78,8 @@ Use the top-right view buttons (`3D`, `Images`, `Split`) to switch between 3D an
 
 ## Packaging the frontend
 
-The built UI is bundled under `src/begira/_frontend/dist/`. Sync it after building:
+The built UI is bundled under `src/begira/_frontend/dist/`.
+You can run the helper script to install frontend deps and build in one step:
 
 ```bash
 python scripts/sync_frontend_dist.py

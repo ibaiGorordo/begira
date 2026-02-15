@@ -4,7 +4,7 @@ help:
 	@echo "Targets:"
 	@echo "  py-install     Install python package in editable mode"
 	@echo "  web-install    Install frontend deps"
-	@echo "  web-build      Build frontend into frontend/dist (served by Python)"
+	@echo "  web-build      Build frontend into src/begira/_frontend/dist"
 	@echo "  run            One-command run: build web + start begira"
 	@echo "  dev-backend    Run backend only (reload)"
 	@echo "  dev-frontend   Run frontend dev server"

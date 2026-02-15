@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from .runner import run
-from .client import BegiraClient, to_unix_seconds
-from .conventions import CoordinateConvention
-from .handles import (
+from .runtime.server import run
+from .sdk.client import BegiraClient, to_unix_seconds
+from .core.conventions import CoordinateConvention
+from .sdk.handles import (
     ElementHandle,
     PointCloudHandle,
     GaussianHandle,

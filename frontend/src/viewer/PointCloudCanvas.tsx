@@ -2,12 +2,12 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { OrbitControls, TransformControls } from '@react-three/drei'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from 'react'
 import * as THREE from 'three'
-import AnimateToolbar from './AnimateToolbar'
-import WASDControls from './WASDControls'
-import MultiPointCloudScene, { PointCloudRenderMode } from './MultiPointCloudScene'
-import GaussianSplatScene from './GaussianSplatScene'
-import CameraScene, { CAMERA_GIZMO_OVERLAY_LAYER, type CameraVisual } from './CameraScene'
-import CameraTrajectoryScene from './CameraTrajectoryScene'
+import AnimateToolbar from '../features/view3d/animation/AnimateToolbar'
+import WASDControls from '../features/view3d/scene/WASDControls'
+import MultiPointCloudScene, { PointCloudRenderMode } from '../features/view3d/scene/MultiPointCloudScene'
+import GaussianSplatScene from '../features/view3d/scene/GaussianSplatScene'
+import CameraScene, { CAMERA_GIZMO_OVERLAY_LAYER, type CameraVisual } from '../features/view3d/scene/CameraScene'
+import CameraTrajectoryScene from '../features/view3d/scene/CameraTrajectoryScene'
 import {
   BoxScene,
   EllipsoidScene,
@@ -15,7 +15,7 @@ import {
   type BoxVisual,
   type EllipsoidVisual,
   type WireBoxOverlay,
-} from './PrimitiveShapeScene'
+} from '../features/view3d/scene/PrimitiveShapeScene'
 import {
   createClickGesture,
   isClickGesture,

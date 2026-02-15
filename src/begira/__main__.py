@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 
-from .runner import run
+from .runtime.server import run
 
 
 def main() -> None:
@@ -24,4 +24,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

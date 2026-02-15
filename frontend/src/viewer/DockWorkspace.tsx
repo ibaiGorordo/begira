@@ -1,6 +1,6 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { Actions, DockLocation, Layout, Model, type IJsonModel, type Node, type TabNode, type TabSetNode } from 'flexlayout-react'
-import PointCloudCanvas from './PointCloudCanvas'
+import PointCloudCanvas from '../features/view3d/canvas/PointCloudCanvas'
 import { appendSampleToUrl, type ElementInfo, type SampleQuery } from './api'
 
 const ROOT_ROW_ID = 'workspace-root-row'
