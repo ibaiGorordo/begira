@@ -123,8 +123,9 @@ export default function App() {
   const [rightOpen, setRightOpen] = useState(true)
   const [focusTarget, setFocusTarget] = useState<string | null>(null)
   const [activeCameraId, setActiveCameraId] = useState<string | null>(null)
-  const [transformMode, setTransformMode] = useState<'translate' | 'rotate'>('translate')
+  const [transformMode, setTransformMode] = useState<'translate' | 'rotate' | 'animate'>('translate')
   const lastRev = useRef<number>(-1)
+  const lastOpenCameraViewSeq = useRef<number>(0)
   const didInitFocus = useRef(false)
   const orderRef = useRef<Map<string, number>>(new Map())
   const nextOrderRef = useRef(0)
@@ -344,12 +345,11 @@ export default function App() {
   }
 
   const openCameraView = (cameraId: string) => {
-    const cam = camerasById.get(cameraId)
-    if (!cam) return
     setCameraViewOrder((prev) => (prev.includes(cameraId) ? prev : [...prev, cameraId]))
     setCameraViewFlags(cameraId, { visible: true, deleted: false })
     setSelectedId(cameraId)
-    setFocusTarget(cameraId)
+    // Opening a camera view should not force the main 3D viewport into that camera.
+    setFocusTarget(null)
     window.setTimeout(() => {
       workspaceRef.current?.focusCamera(cameraId)
     }, 0)
@@ -424,6 +424,17 @@ export default function App() {
       try {
         const ev = await fetchEvents()
         if (cancelled) return
+        const openCameraCmd = ev.viewerCommands?.openCameraView
+        if (
+          openCameraCmd &&
+          Number.isFinite(openCameraCmd.seq) &&
+          Number(openCameraCmd.seq) > lastOpenCameraViewSeq.current &&
+          typeof openCameraCmd.cameraId === 'string' &&
+          openCameraCmd.cameraId.length > 0
+        ) {
+          lastOpenCameraViewSeq.current = Number(openCameraCmd.seq)
+          openCameraView(openCameraCmd.cameraId)
+        }
         if (ev.globalRevision === lastRev.current) return
         lastRev.current = ev.globalRevision
         const items = await fetchElements(timeline.sampleQuery)
@@ -572,6 +583,21 @@ export default function App() {
       const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase()
       if (tag === 'input' || tag === 'textarea' || (e.target as HTMLElement | null)?.isContentEditable) return
       const mod = e.metaKey || e.ctrlKey
+      if (e.key === ' ' || e.code === 'Space') {
+        e.preventDefault()
+        timeline.togglePlay()
+        return
+      }
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault()
+        timeline.step(-1)
+        return
+      }
+      if (e.key === 'ArrowRight') {
+        e.preventDefault()
+        timeline.step(1)
+        return
+      }
       if (!mod) return
       if (e.key.toLowerCase() === 'z' && !e.shiftKey) {
         e.preventDefault()
@@ -583,7 +609,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
+  }, [timeline, undo, redo])
 
   const applyVisibility = async (id: string, visible: boolean) => {
     const prev = elements?.find((e) => e.id === id)
@@ -863,6 +889,15 @@ export default function App() {
             transformMode={transformMode}
             onTransformModeChange={setTransformMode}
             onTransformCommit={(id, position, rotation) => void onTransformCommit(id, position, rotation)}
+            onRunUserAction={(action) => runUserAction(action)}
+            onSelectTimelineFrame={(frame) => {
+              if (timeline.axis !== 'frame') {
+                timeline.setAxis('frame')
+                window.requestAnimationFrame(() => timeline.setValue(frame))
+                return
+              }
+              timeline.setValue(frame)
+            }}
             show3D={threeDViewVisible}
             imageViews={dockImageViews}
             cameraViews={dockCameraViews}
@@ -915,9 +950,11 @@ export default function App() {
         value={timeline.value}
         bounds={timeline.bounds}
         isPlaying={timeline.isPlaying}
+        loopPlayback={timeline.loopPlayback}
         playbackFps={timeline.playbackFps}
         onAxisChange={timeline.setAxis}
         onValueChange={timeline.setValue}
+        onToggleLoop={timeline.setLoopPlayback}
         onTogglePlay={timeline.togglePlay}
         onScrubStart={timeline.beginScrub}
         onScrubEnd={timeline.endScrub}

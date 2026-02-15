@@ -2,14 +2,18 @@ import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import type { ElementInfo, SampleQuery } from './api'
 import {
+  deleteCameraAnimation,
   fetchPointCloudElementMeta,
   fetchGaussianElementMeta,
+  fetchCameraAnimation,
+  putCameraAnimation,
   fetchCameraElementMeta,
   fetchImageElementMeta,
   fetchElementMeta,
   updatePointCloudSettings,
   updateElementMeta,
   deleteElement,
+  type CameraAnimationTrack,
 } from './api'
 import { COLORMAPS, DEFAULT_DEPTH_COLORMAP, DEFAULT_HEIGHT_COLORMAP, type ColormapId } from './colormaps'
 
@@ -18,8 +22,8 @@ type Props = {
   activeCameraId: string | null
   onSetActiveCamera: (id: string | null) => void
   onDelete: (id: string) => void
-  transformMode: 'translate' | 'rotate'
-  onTransformModeChange: (mode: 'translate' | 'rotate') => void
+  transformMode: 'translate' | 'rotate' | 'animate'
+  onTransformModeChange: (mode: 'translate' | 'rotate' | 'animate') => void
   onPoseCommit: (id: string, position: [number, number, number], rotation: [number, number, number, number]) => void
   onOpenCameraView: (cameraId: string) => void
   sample?: SampleQuery
@@ -88,8 +92,19 @@ export default function Inspector({
   const [imgChannels, setImgChannels] = useState<number | null>(null)
   const [imgMime, setImgMime] = useState<string | null>(null)
   const [lookAtTargetId, setLookAtTargetId] = useState<string>('')
+  const [animationTrack, setAnimationTrack] = useState<CameraAnimationTrack | null>(null)
+  const [animationBusy, setAnimationBusy] = useState(false)
+  const [animationTargetId, setAnimationTargetId] = useState<string>('')
+  const [animationStartFrame, setAnimationStartFrame] = useState<number>(0)
+  const [animationEndFrame, setAnimationEndFrame] = useState<number>(120)
+  const [animationStep, setAnimationStep] = useState<number>(1)
+  const [animationTurns, setAnimationTurns] = useState<number>(1.0)
+  const [animationRadius, setAnimationRadius] = useState<string>('')
+  const [animationPhaseDeg, setAnimationPhaseDeg] = useState<number>(0.0)
 
   const availableLookAtTargets = lookAtTargets.filter((t) => t.id !== selected?.id && t.type !== 'image')
+  const availableLookAtTargetIds = availableLookAtTargets.map((t) => t.id).join('|')
+  const followSyncActive = !!(isCamera && selected && activeCameraId === selected.id)
 
   useEffect(() => {
     setErr(null)
@@ -438,6 +453,58 @@ export default function Inspector({
     })
   }, [isCamera, selected?.id, availableLookAtTargets])
 
+  useEffect(() => {
+    if (!isCamera || !selected || !enabled) {
+      setAnimationTrack(null)
+      return
+    }
+
+    let cancelled = false
+
+    const sync = async () => {
+      try {
+        const track = await fetchCameraAnimation(selected.id)
+        if (cancelled) return
+        setAnimationTrack(track)
+        if (!track) {
+          setAnimationTargetId((prev) => {
+            if (prev && availableLookAtTargets.some((t) => t.id === prev)) return prev
+            return availableLookAtTargets[0]?.id ?? ''
+          })
+          return
+        }
+        setAnimationTargetId(track.targetId)
+        setAnimationStartFrame(Number(track.startFrame))
+        setAnimationEndFrame(Number(track.endFrame))
+        setAnimationStep(Math.max(1, Number(track.step)))
+        setAnimationTurns(Number(track.params.turns ?? 1.0))
+        setAnimationRadius(track.params.radius !== undefined ? String(track.params.radius) : '')
+        setAnimationPhaseDeg(Number(track.params.phaseDeg ?? 0.0))
+      } catch {}
+    }
+
+    void sync()
+    const onChanged = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ cameraId?: string }>).detail
+      if (detail?.cameraId && detail.cameraId !== selected.id) return
+      void sync()
+    }
+    window.addEventListener('begira_camera_animation_changed', onChanged as EventListener)
+
+    return () => {
+      cancelled = true
+      window.removeEventListener('begira_camera_animation_changed', onChanged as EventListener)
+    }
+  }, [enabled, isCamera, selected?.id, availableLookAtTargetIds])
+
+  useEffect(() => {
+    if (!isCamera) return
+    setAnimationTargetId((prev) => {
+      if (prev && availableLookAtTargets.some((t) => t.id === prev)) return prev
+      return availableLookAtTargets[0]?.id ?? ''
+    })
+  }, [availableLookAtTargetIds, isCamera, selected?.id])
+
   const lookAtSelectedTarget = () => {
     if (!selected || !isCamera || !position) return
     if (!lookAtTargetId) return
@@ -471,6 +538,68 @@ export default function Inspector({
     manualPoseEditRef.current = true
     setRotation(nextRotation)
     setRotationEuler(nextEuler)
+  }
+
+  const generateCameraAnimation = async (mode: 'follow' | 'orbit') => {
+    if (!selected || !isCamera || !animationTargetId) return
+    setAnimationBusy(true)
+    setErr(null)
+    try {
+      const req: {
+        mode: 'follow' | 'orbit'
+        targetId: string
+        startFrame: number
+        endFrame: number
+        step?: number
+        turns?: number
+        radius?: number
+        phaseDeg?: number
+      } = {
+        mode,
+        targetId: animationTargetId,
+        startFrame: Math.max(0, Math.round(animationStartFrame)),
+        endFrame: Math.max(Math.round(animationStartFrame), Math.round(animationEndFrame)),
+        step: Math.max(1, Math.round(animationStep)),
+      }
+      if (mode === 'orbit') {
+        req.turns = Number.isFinite(animationTurns) ? animationTurns : 1.0
+        req.phaseDeg = Number.isFinite(animationPhaseDeg) ? animationPhaseDeg : 0.0
+        const radiusVal = Number(animationRadius)
+        if (animationRadius.trim() !== '' && Number.isFinite(radiusVal) && radiusVal > 0) {
+          req.radius = radiusVal
+        }
+      }
+      const track = await putCameraAnimation(selected.id, req)
+      setAnimationTrack(track)
+      window.dispatchEvent(
+        new CustomEvent('begira_camera_animation_changed', {
+          detail: { cameraId: selected.id },
+        }),
+      )
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setAnimationBusy(false)
+    }
+  }
+
+  const clearCameraAnimationTrack = async () => {
+    if (!selected || !isCamera) return
+    setAnimationBusy(true)
+    setErr(null)
+    try {
+      await deleteCameraAnimation(selected.id)
+      setAnimationTrack(null)
+      window.dispatchEvent(
+        new CustomEvent('begira_camera_animation_changed', {
+          detail: { cameraId: selected.id },
+        }),
+      )
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setAnimationBusy(false)
+    }
   }
 
   const startDragNumber =
@@ -584,20 +713,15 @@ export default function Inspector({
       )}
 
       <div className="inspect-card">
-        <div className="inspect-label">Transform Mode</div>
-        <div className="pill-row">
-          <button className={`pill-btn${transformMode === 'translate' ? ' active' : ''}`} onClick={() => onTransformModeChange('translate')}>
-            Move
-          </button>
-          <button className={`pill-btn${transformMode === 'rotate' ? ' active' : ''}`} onClick={() => onTransformModeChange('rotate')}>
-            Rotate
-          </button>
-          {isCamera && (
+        <div className="inspect-label">Transform</div>
+        <div className="panel-subtitle">Use the 3D viewport toolbar to switch Move, Rotate, and Animate modes.</div>
+        {isCamera && (
+          <div className="pill-row" style={{ marginTop: 8 }}>
             <button className={`pill-btn${activeCameraId === selected.id ? ' active' : ''}`} onClick={() => onSetActiveCamera(activeCameraId === selected.id ? null : selected.id)}>
               {activeCameraId === selected.id ? 'Stop View Sync' : 'Sync 3D View'}
             </button>
-          )}
-        </div>
+          </div>
+        )}
 
         <div style={{ marginTop: 10 }}>
           <div className="inspect-label">Position</div>
@@ -713,6 +837,141 @@ export default function Inspector({
               Far
               <input type="number" step={1} value={far ?? 1000} onChange={(e) => setFar(parseFloat(e.target.value))} style={{ width: 86, marginLeft: 6 }} />
             </label>
+          </div>
+        </div>
+      )}
+
+      {isCamera && (
+        <div className="inspect-card">
+          <div className="inspect-label">Animation</div>
+          {followSyncActive && (
+            <div className="panel-subtitle" style={{ marginTop: 6 }}>
+              Animation editing is disabled while camera follow/view sync is active. Stop view sync to author orbit keys.
+            </div>
+          )}
+          <div style={{ marginTop: 8, display: 'grid', gap: 8 }}>
+            <label style={{ fontSize: 12 }}>
+              Target
+              <select
+                value={animationTargetId}
+                onChange={(e) => setAnimationTargetId(e.target.value)}
+                style={{ width: '100%', marginTop: 4 }}
+                disabled={animationBusy || availableLookAtTargets.length === 0 || followSyncActive}
+              >
+                {availableLookAtTargets.length === 0 && <option value="">(no available 3D objects)</option>}
+                {availableLookAtTargets.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name} ({t.type})
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <div style={{ display: 'flex', gap: 6 }}>
+              <label style={{ fontSize: 12, flex: 1 }}>
+                Start frame
+                <input
+                  type="number"
+                  step={1}
+                  value={animationStartFrame}
+                  onChange={(e) => setAnimationStartFrame(Math.round(Number(e.target.value) || 0))}
+                  style={{ width: '100%', marginTop: 4 }}
+                  disabled={animationBusy || followSyncActive}
+                />
+              </label>
+              <label style={{ fontSize: 12, flex: 1 }}>
+                End frame
+                <input
+                  type="number"
+                  step={1}
+                  value={animationEndFrame}
+                  onChange={(e) => setAnimationEndFrame(Math.round(Number(e.target.value) || 0))}
+                  style={{ width: '100%', marginTop: 4 }}
+                  disabled={animationBusy || followSyncActive}
+                />
+              </label>
+              <label style={{ fontSize: 12, width: 86 }}>
+                Step
+                <input
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={animationStep}
+                  onChange={(e) => setAnimationStep(Math.max(1, Math.round(Number(e.target.value) || 1)))}
+                  style={{ width: '100%', marginTop: 4 }}
+                  disabled={animationBusy || followSyncActive}
+                />
+              </label>
+            </div>
+
+            <div style={{ display: 'grid', gap: 6 }}>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <label style={{ fontSize: 12, flex: 1 }}>
+                  Turns
+                  <input
+                    type="number"
+                    step={0.1}
+                    value={animationTurns}
+                    onChange={(e) => setAnimationTurns(Number(e.target.value))}
+                    style={{ width: '100%', marginTop: 4 }}
+                    disabled={animationBusy || followSyncActive}
+                  />
+                </label>
+                <label style={{ fontSize: 12, flex: 1 }}>
+                  Radius
+                  <input
+                    type="number"
+                    step={0.01}
+                    value={animationRadius}
+                    onChange={(e) => setAnimationRadius(e.target.value)}
+                    placeholder="auto"
+                    style={{ width: '100%', marginTop: 4 }}
+                    disabled={animationBusy || followSyncActive}
+                  />
+                </label>
+              </div>
+              <label style={{ fontSize: 12 }}>
+                Phase (deg)
+                <input
+                  type="number"
+                  step={1}
+                  value={animationPhaseDeg}
+                  onChange={(e) => setAnimationPhaseDeg(Number(e.target.value))}
+                  style={{ width: '100%', marginTop: 4 }}
+                  disabled={animationBusy || followSyncActive}
+                />
+              </label>
+            </div>
+
+            <div className="pill-row" style={{ justifyContent: 'space-between' }}>
+              <button
+                type="button"
+                className="toolbar-btn"
+                onClick={() => void generateCameraAnimation('orbit')}
+                disabled={animationBusy || !animationTargetId || followSyncActive}
+              >
+                {animationBusy ? 'Working...' : 'Generate Orbit'}
+              </button>
+              <button
+                type="button"
+                className="toolbar-btn"
+                onClick={() => void clearCameraAnimationTrack()}
+                disabled={animationBusy || !animationTrack || followSyncActive}
+              >
+                Clear
+              </button>
+            </div>
+
+            {animationTrack && (
+              <div className="panel-subtitle">
+                Active: {animationTrack.mode} [{animationTrack.startFrame}, {animationTrack.endFrame}]
+                {animationTrack.mode === 'orbit' ? `, keys ${animationTrack.controlKeys.length}` : ''}
+              </div>
+            )}
+            {animationTrack?.mode === 'follow' && (
+              <div className="panel-subtitle">Follow is treated as view-sync behavior. Use Orbit animation for trajectory authoring.</div>
+            )}
+            <div className="panel-subtitle">Use the top 3D toolbar mode `Animate` to edit orbit keys in the viewport.</div>
           </div>
         </div>
       )}

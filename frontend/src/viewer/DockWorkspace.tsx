@@ -7,7 +7,8 @@ const ROOT_ROW_ID = 'workspace-root-row'
 const THREE_D_TABSET_ID = 'workspace-tabset-3d'
 const THREE_D_TAB_ID = 'view-3d-main'
 
-type TransformMode = 'translate' | 'rotate'
+type TransformMode = 'translate' | 'rotate' | 'animate'
+type UndoableAction = { label: string; do: () => Promise<void>; undo: () => Promise<void> }
 
 export type DockImageView = {
   id: string
@@ -36,6 +37,8 @@ type DockWorkspaceProps = {
   transformMode: TransformMode
   onTransformModeChange: (mode: TransformMode) => void
   onTransformCommit: (id: string, position: [number, number, number], rotation: [number, number, number, number]) => void
+  onRunUserAction?: (action: UndoableAction) => Promise<void>
+  onSelectTimelineFrame?: (frame: number) => void
   show3D: boolean
   imageViews: DockImageView[]
   cameraViews: DockCameraView[]
@@ -158,6 +161,8 @@ function ThreeDTabPane({
   transformMode,
   onTransformModeChange,
   onTransformCommit,
+  onRunUserAction,
+  onSelectTimelineFrame,
   sample,
 }: Omit<DockWorkspaceProps, 'show3D' | 'imageViews' | 'cameraViews' | 'images'> & { images: ElementInfo[] }) {
   const cameraVisuals = useMemo(
@@ -189,6 +194,12 @@ function ThreeDTabPane({
         >
           Rotate
         </button>
+        <button
+          className={transformMode === 'animate' ? 'active' : ''}
+          onClick={() => onTransformModeChange('animate')}
+        >
+          Animate
+        </button>
       </div>
 
       <PointCloudCanvas
@@ -206,6 +217,8 @@ function ThreeDTabPane({
         activeCameraId={activeCameraId}
         transformMode={transformMode}
         sample={sample}
+        onRunUserAction={onRunUserAction}
+        onSelectTimelineFrame={onSelectTimelineFrame}
         onTransformCommit={(id, position, rotation) => onTransformCommit(id, position, rotation)}
       />
     </div>
@@ -298,6 +311,7 @@ function CameraTabPane({
   onFocus,
   transformMode,
   onTransformCommit,
+  onSelectTimelineFrame,
   sample,
 }: Omit<DockWorkspaceProps, 'show3D' | 'imageViews' | 'cameraViews' | 'images' | 'activeCameraId' | 'onTransformModeChange'> & {
   node: TabNode
@@ -340,6 +354,7 @@ function CameraTabPane({
         transformMode={transformMode}
         sample={sample}
         secondaryView
+        onSelectTimelineFrame={onSelectTimelineFrame}
         onTransformCommit={(id, position, rotation) => onTransformCommit(id, position, rotation)}
       />
     </div>

@@ -3,7 +3,16 @@ from __future__ import annotations
 from .runner import run
 from .client import BegiraClient, to_unix_seconds
 from .conventions import CoordinateConvention
-from .handles import ElementHandle, PointCloudHandle, GaussianHandle, CameraHandle, ImageHandle
+from .handles import (
+    ElementHandle,
+    PointCloudHandle,
+    GaussianHandle,
+    CameraHandle,
+    CameraAnimator,
+    ImageHandle,
+    Box3DHandle,
+    Ellipsoid3DHandle,
+)
 
 __all__ = [
     "run",
@@ -14,5 +23,8 @@ __all__ = [
     "PointCloudHandle",
     "GaussianHandle",
     "CameraHandle",
+    "CameraAnimator",
     "ImageHandle",
+    "Box3DHandle",
+    "Ellipsoid3DHandle",
 ]

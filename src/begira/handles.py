@@ -45,6 +45,92 @@ class ElementOps(Protocol):
         timestamp: float | datetime | None = None,
         timeout_s: float = 10.0,
     ) -> dict[str, Any]: ...
+    def get_camera_animation(
+        self,
+        camera_id: str,
+        *,
+        timeout_s: float = 10.0,
+    ) -> dict[str, Any] | None: ...
+    def set_camera_animation(
+        self,
+        camera_id: str,
+        *,
+        mode: str,
+        target_id: str,
+        start_frame: int,
+        end_frame: int,
+        step: int = 1,
+        turns: float | None = None,
+        radius: float | None = None,
+        phase_deg: float | None = None,
+        up: tuple[float, float, float] | list[float] | np.ndarray | None = None,
+        timeout_s: float = 10.0,
+    ) -> dict[str, Any]: ...
+    def update_camera_animation_key(
+        self,
+        camera_id: str,
+        *,
+        frame: int,
+        position: tuple[float, float, float] | list[float] | np.ndarray,
+        pull_enabled: bool = False,
+        pull_radius_frames: int = 0,
+        pull_pinned_ends: bool = False,
+        timeout_s: float = 10.0,
+    ) -> dict[str, Any]: ...
+    def insert_camera_animation_key(
+        self,
+        camera_id: str,
+        *,
+        frame: int,
+        position: tuple[float, float, float] | list[float] | np.ndarray | None = None,
+        timeout_s: float = 10.0,
+    ) -> dict[str, Any]: ...
+    def delete_camera_animation_key(
+        self,
+        camera_id: str,
+        *,
+        frame: int,
+        timeout_s: float = 10.0,
+    ) -> dict[str, Any]: ...
+    def duplicate_camera_animation_key(
+        self,
+        camera_id: str,
+        *,
+        source_frame: int,
+        target_frame: int,
+        timeout_s: float = 10.0,
+    ) -> dict[str, Any]: ...
+    def smooth_camera_animation(
+        self,
+        camera_id: str,
+        *,
+        start_frame: int | None = None,
+        end_frame: int | None = None,
+        passes: int = 1,
+        pinned_ends: bool = True,
+        timeout_s: float = 10.0,
+    ) -> dict[str, Any]: ...
+    def clear_camera_animation(
+        self,
+        camera_id: str,
+        *,
+        timeout_s: float = 10.0,
+    ) -> None: ...
+    def get_camera_animation_trajectory(
+        self,
+        camera_id: str,
+        *,
+        start_frame: int | None = None,
+        end_frame: int | None = None,
+        stride: int = 1,
+        timeout_s: float = 10.0,
+    ) -> dict[str, Any]: ...
+    def open_camera_view(
+        self,
+        camera_id: str,
+        *,
+        timeout_s: float = 10.0,
+    ) -> None: ...
 
 
 def _quat_from_matrix(m: np.ndarray) -> tuple[float, float, float, float]:
@@ -448,6 +534,38 @@ class GaussianHandle(ElementHandle):
         raise ValueError(f"Gaussian element '{self.id}' metadata does not expose count")
 
 
+class Box3DHandle(ElementHandle):
+    @property
+    def size(self) -> tuple[float, float, float]:
+        value = self.get_meta().get("size")
+        if not isinstance(value, list) or len(value) != 3:
+            raise ValueError(f"Box3D '{self.id}' metadata does not expose a valid size")
+        return (float(value[0]), float(value[1]), float(value[2]))
+
+    @property
+    def color(self) -> tuple[float, float, float]:
+        value = self.get_meta().get("color")
+        if not isinstance(value, list) or len(value) != 3:
+            raise ValueError(f"Box3D '{self.id}' metadata does not expose a valid color")
+        return (float(value[0]), float(value[1]), float(value[2]))
+
+
+class Ellipsoid3DHandle(ElementHandle):
+    @property
+    def radii(self) -> tuple[float, float, float]:
+        value = self.get_meta().get("radii")
+        if not isinstance(value, list) or len(value) != 3:
+            raise ValueError(f"Ellipsoid3D '{self.id}' metadata does not expose valid radii")
+        return (float(value[0]), float(value[1]), float(value[2]))
+
+    @property
+    def color(self) -> tuple[float, float, float]:
+        value = self.get_meta().get("color")
+        if not isinstance(value, list) or len(value) != 3:
+            raise ValueError(f"Ellipsoid3D '{self.id}' metadata does not expose a valid color")
+        return (float(value[0]), float(value[1]), float(value[2]))
+
+
 class CameraHandle(ElementHandle):
     @property
     def fov(self) -> float:
@@ -496,6 +614,189 @@ class CameraHandle(ElementHandle):
         if k.shape != (3, 3):
             raise ValueError(f"Camera '{self.id}' intrinsic matrix has invalid shape {k.shape}")
         return k
+
+    @property
+    def animate(self) -> "CameraAnimator":
+        return CameraAnimator(self)
+
+    def open_view(self, *, timeout_s: float = 10.0) -> Self:
+        self._ops.open_camera_view(self.id, timeout_s=timeout_s)
+        return self
+
+    def open_camera_view(self, *, timeout_s: float = 10.0) -> Self:
+        return self.open_view(timeout_s=timeout_s)
+
+
+class CameraAnimator:
+    def __init__(self, camera: CameraHandle) -> None:
+        self._camera = camera
+        self._ops = camera._ops
+
+    @property
+    def camera_id(self) -> str:
+        return self._camera.id
+
+    @staticmethod
+    def _target_id(target: object) -> str:
+        if isinstance(target, ElementHandle):
+            return target.id
+        if isinstance(target, str) and target.strip():
+            return target.strip()
+        raise ValueError("target must be an element handle or element id")
+
+    def follow(
+        self,
+        target: object,
+        *,
+        start_frame: int,
+        end_frame: int,
+        step: int = 1,
+        timeout_s: float = 10.0,
+    ) -> CameraHandle:
+        self._ops.set_camera_animation(
+            self.camera_id,
+            mode="follow",
+            target_id=self._target_id(target),
+            start_frame=int(start_frame),
+            end_frame=int(end_frame),
+            step=int(step),
+            timeout_s=timeout_s,
+        )
+        return self._camera
+
+    def orbit(
+        self,
+        target: object,
+        *,
+        start_frame: int,
+        end_frame: int,
+        turns: float = 1.0,
+        radius: float | None = None,
+        phase_deg: float = 0.0,
+        up: tuple[float, float, float] | list[float] | np.ndarray | None = None,
+        step: int = 1,
+        timeout_s: float = 10.0,
+    ) -> CameraHandle:
+        self._ops.set_camera_animation(
+            self.camera_id,
+            mode="orbit",
+            target_id=self._target_id(target),
+            start_frame=int(start_frame),
+            end_frame=int(end_frame),
+            turns=float(turns),
+            radius=float(radius) if radius is not None else None,
+            phase_deg=float(phase_deg),
+            up=up,
+            step=int(step),
+            timeout_s=timeout_s,
+        )
+        return self._camera
+
+    def get_track(self, *, timeout_s: float = 10.0) -> dict[str, Any] | None:
+        return self._ops.get_camera_animation(self.camera_id, timeout_s=timeout_s)
+
+    def get_trajectory(
+        self,
+        *,
+        start_frame: int | None = None,
+        end_frame: int | None = None,
+        stride: int = 1,
+        timeout_s: float = 10.0,
+    ) -> dict[str, Any]:
+        return self._ops.get_camera_animation_trajectory(
+            self.camera_id,
+            start_frame=start_frame,
+            end_frame=end_frame,
+            stride=stride,
+            timeout_s=timeout_s,
+        )
+
+    def update_key(
+        self,
+        frame: int,
+        position: tuple[float, float, float] | list[float] | np.ndarray,
+        *,
+        pull_enabled: bool = False,
+        pull_radius_frames: int = 0,
+        pull_pinned_ends: bool = False,
+        timeout_s: float = 10.0,
+    ) -> CameraHandle:
+        self._ops.update_camera_animation_key(
+            self.camera_id,
+            frame=int(frame),
+            position=position,
+            pull_enabled=bool(pull_enabled),
+            pull_radius_frames=int(pull_radius_frames),
+            pull_pinned_ends=bool(pull_pinned_ends),
+            timeout_s=timeout_s,
+        )
+        return self._camera
+
+    def insert_key(
+        self,
+        frame: int,
+        position: tuple[float, float, float] | list[float] | np.ndarray | None = None,
+        *,
+        timeout_s: float = 10.0,
+    ) -> CameraHandle:
+        self._ops.insert_camera_animation_key(
+            self.camera_id,
+            frame=int(frame),
+            position=position,
+            timeout_s=timeout_s,
+        )
+        return self._camera
+
+    def delete_key(
+        self,
+        frame: int,
+        *,
+        timeout_s: float = 10.0,
+    ) -> CameraHandle:
+        self._ops.delete_camera_animation_key(
+            self.camera_id,
+            frame=int(frame),
+            timeout_s=timeout_s,
+        )
+        return self._camera
+
+    def duplicate_key(
+        self,
+        source_frame: int,
+        target_frame: int,
+        *,
+        timeout_s: float = 10.0,
+    ) -> CameraHandle:
+        self._ops.duplicate_camera_animation_key(
+            self.camera_id,
+            source_frame=int(source_frame),
+            target_frame=int(target_frame),
+            timeout_s=timeout_s,
+        )
+        return self._camera
+
+    def smooth(
+        self,
+        *,
+        start_frame: int | None = None,
+        end_frame: int | None = None,
+        passes: int = 1,
+        pinned_ends: bool = True,
+        timeout_s: float = 10.0,
+    ) -> CameraHandle:
+        self._ops.smooth_camera_animation(
+            self.camera_id,
+            start_frame=start_frame,
+            end_frame=end_frame,
+            passes=int(passes),
+            pinned_ends=bool(pinned_ends),
+            timeout_s=timeout_s,
+        )
+        return self._camera
+
+    def clear(self, *, timeout_s: float = 10.0) -> CameraHandle:
+        self._ops.clear_camera_animation(self.camera_id, timeout_s=timeout_s)
+        return self._camera
 
 
 class ImageHandle(ElementHandle):

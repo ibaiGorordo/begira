@@ -4,6 +4,7 @@ import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from .elements import CameraElement
 from .registry import REGISTRY
 from .viewer_settings import VIEWER_SETTINGS
 from .elements_api import mount_elements_api
@@ -30,9 +31,14 @@ def create_api_app() -> FastAPI:
         return {"ok": True}
 
     @app.get("/api/events")
-    def events() -> dict[str, int]:
-        # Minimal polling endpoint.
-        return {"globalRevision": REGISTRY.global_revision()}
+    def events() -> dict:
+        # Minimal polling endpoint + lightweight viewer commands.
+        return {
+            "globalRevision": REGISTRY.global_revision(),
+            "viewerCommands": {
+                "openCameraView": VIEWER_SETTINGS.get_open_camera_view_request(),
+            },
+        }
 
     @app.post("/api/reset")
     def reset_project() -> dict[str, bool]:
@@ -63,5 +69,21 @@ def create_api_app() -> FastAPI:
             "ok": True,
             "coordinateConvention": updated.coordinate_convention,
         }
+
+    @app.post("/api/viewer/open-camera-view")
+    def open_camera_view(body: dict) -> dict:
+        camera_id = str(body.get("cameraId", "")).strip()
+        if not camera_id:
+            raise HTTPException(status_code=400, detail="cameraId is required")
+        elem = REGISTRY.get_element(camera_id)
+        if elem is None:
+            raise HTTPException(status_code=404, detail=f"Unknown element: {camera_id}")
+        if not isinstance(elem, CameraElement):
+            raise HTTPException(status_code=400, detail="cameraId must reference a camera element")
+        try:
+            cmd = VIEWER_SETTINGS.request_open_camera_view(camera_id)
+        except ValueError as ex:
+            raise HTTPException(status_code=400, detail=str(ex))
+        return {"ok": True, **cmd}
 
     return app

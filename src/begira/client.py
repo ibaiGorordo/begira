@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 
 from .conventions import CoordinateConvention
-from .handles import CameraHandle, GaussianHandle, ImageHandle, PointCloudHandle
+from .handles import CameraHandle, GaussianHandle, ImageHandle, PointCloudHandle, Box3DHandle, Ellipsoid3DHandle
 from .image_logging import encode_image_payload
 
 
@@ -107,6 +107,18 @@ class BegiraClient:
             if res.status_code >= 400:
                 raise RuntimeError(f"Failed to get viewer settings: {res.status_code} {res.text}")
             return dict(res.json())
+
+    def open_camera_view(self, camera_id: str, *, timeout_s: float = 10.0) -> None:
+        import httpx
+
+        cid = str(camera_id).strip()
+        if not cid:
+            raise ValueError("camera_id cannot be empty")
+
+        with httpx.Client(base_url=self.base_url, timeout=timeout_s) as client:
+            res = client.post("/api/viewer/open-camera-view", json={"cameraId": cid})
+            if res.status_code >= 400:
+                raise RuntimeError(f"Failed to open camera view: {res.status_code} {res.text}")
 
     def get_timeline_info(self, *, timeout_s: float = 10.0) -> dict[str, Any]:
         import httpx
@@ -290,6 +302,82 @@ class BegiraClient:
             if not eid:
                 raise RuntimeError(f"Invalid camera response: {data}")
             return CameraHandle(eid, ops=self, element_type="camera")
+
+    def log_box3d(
+        self,
+        name: str,
+        *,
+        size: tuple[float, float, float] | list[float] | np.ndarray = (1.0, 1.0, 1.0),
+        color: tuple[float, float, float] | list[float] | np.ndarray = (0.62, 0.8, 1.0),
+        position: tuple[float, float, float] | list[float] = (0.0, 0.0, 0.0),
+        rotation: tuple[float, float, float, float] | list[float] = (0.0, 0.0, 0.0, 1.0),
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        static: bool = False,
+        element_id: str | None = None,
+        timeout_s: float = 10.0,
+    ) -> Box3DHandle:
+        import httpx
+
+        s = np.asarray(size, dtype=np.float64).reshape(3)
+        c = np.asarray(color, dtype=np.float64).reshape(3)
+        payload: dict[str, Any] = {
+            "name": str(name),
+            "size": [float(s[0]), float(s[1]), float(s[2])],
+            "color": [float(c[0]), float(c[1]), float(c[2])],
+            "position": [float(position[0]), float(position[1]), float(position[2])],
+            "rotation": [float(rotation[0]), float(rotation[1]), float(rotation[2]), float(rotation[3])],
+            "elementId": element_id,
+        }
+        payload.update(_time_body(frame=frame, timestamp=timestamp, static=static))
+
+        with httpx.Client(base_url=self.base_url, timeout=timeout_s) as client:
+            res = client.post("/api/elements/boxes3d", json=payload)
+            if res.status_code >= 400:
+                raise RuntimeError(f"Failed to create box3d: {res.status_code} {res.text}")
+            data = res.json()
+            eid = str(data.get("id"))
+            if not eid:
+                raise RuntimeError(f"Invalid box3d response: {data}")
+            return Box3DHandle(eid, ops=self, element_type="box3d")
+
+    def log_ellipsoid3d(
+        self,
+        name: str,
+        *,
+        radii: tuple[float, float, float] | list[float] | np.ndarray = (0.5, 0.5, 0.5),
+        color: tuple[float, float, float] | list[float] | np.ndarray = (0.56, 0.8, 0.62),
+        position: tuple[float, float, float] | list[float] = (0.0, 0.0, 0.0),
+        rotation: tuple[float, float, float, float] | list[float] = (0.0, 0.0, 0.0, 1.0),
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        static: bool = False,
+        element_id: str | None = None,
+        timeout_s: float = 10.0,
+    ) -> Ellipsoid3DHandle:
+        import httpx
+
+        r = np.asarray(radii, dtype=np.float64).reshape(3)
+        c = np.asarray(color, dtype=np.float64).reshape(3)
+        payload: dict[str, Any] = {
+            "name": str(name),
+            "radii": [float(r[0]), float(r[1]), float(r[2])],
+            "color": [float(c[0]), float(c[1]), float(c[2])],
+            "position": [float(position[0]), float(position[1]), float(position[2])],
+            "rotation": [float(rotation[0]), float(rotation[1]), float(rotation[2]), float(rotation[3])],
+            "elementId": element_id,
+        }
+        payload.update(_time_body(frame=frame, timestamp=timestamp, static=static))
+
+        with httpx.Client(base_url=self.base_url, timeout=timeout_s) as client:
+            res = client.post("/api/elements/ellipsoids3d", json=payload)
+            if res.status_code >= 400:
+                raise RuntimeError(f"Failed to create ellipsoid3d: {res.status_code} {res.text}")
+            data = res.json()
+            eid = str(data.get("id"))
+            if not eid:
+                raise RuntimeError(f"Invalid ellipsoid3d response: {data}")
+            return Ellipsoid3DHandle(eid, ops=self, element_type="ellipsoid3d")
 
     def log_points(
         self,
@@ -556,3 +644,202 @@ class BegiraClient:
             out = put.json()
             out_id = str(out.get("id") or eid)
             return GaussianHandle(out_id, ops=self, element_type="gaussians")
+
+    def get_camera_animation(
+        self,
+        camera_id: str,
+        *,
+        timeout_s: float = 10.0,
+    ) -> dict[str, Any] | None:
+        import httpx
+
+        with httpx.Client(base_url=self.base_url, timeout=timeout_s) as client:
+            res = client.get(f"/api/elements/{camera_id}/animation")
+            if res.status_code == 404:
+                return None
+            if res.status_code >= 400:
+                raise RuntimeError(f"Failed to get camera animation: {res.status_code} {res.text}")
+            return dict(res.json())
+
+    def set_camera_animation(
+        self,
+        camera_id: str,
+        *,
+        mode: str,
+        target_id: str,
+        start_frame: int,
+        end_frame: int,
+        step: int = 1,
+        turns: float | None = None,
+        radius: float | None = None,
+        phase_deg: float | None = None,
+        up: tuple[float, float, float] | list[float] | np.ndarray | None = None,
+        timeout_s: float = 10.0,
+    ) -> dict[str, Any]:
+        import httpx
+
+        payload: dict[str, Any] = {
+            "mode": str(mode),
+            "targetId": str(target_id),
+            "startFrame": int(start_frame),
+            "endFrame": int(end_frame),
+            "step": int(step),
+        }
+        if turns is not None:
+            payload["turns"] = float(turns)
+        if radius is not None:
+            payload["radius"] = float(radius)
+        if phase_deg is not None:
+            payload["phaseDeg"] = float(phase_deg)
+        if up is not None:
+            u = np.asarray(up, dtype=np.float64).reshape(3)
+            payload["up"] = [float(u[0]), float(u[1]), float(u[2])]
+
+        with httpx.Client(base_url=self.base_url, timeout=timeout_s) as client:
+            res = client.put(f"/api/elements/{camera_id}/animation", json=payload)
+            if res.status_code >= 400:
+                raise RuntimeError(f"Failed to set camera animation: {res.status_code} {res.text}")
+            return dict(res.json())
+
+    def update_camera_animation_key(
+        self,
+        camera_id: str,
+        *,
+        frame: int,
+        position: tuple[float, float, float] | list[float] | np.ndarray,
+        pull_enabled: bool = False,
+        pull_radius_frames: int = 0,
+        pull_pinned_ends: bool = False,
+        timeout_s: float = 10.0,
+    ) -> dict[str, Any]:
+        import httpx
+
+        p = np.asarray(position, dtype=np.float64).reshape(3)
+        payload: dict[str, Any] = {
+            "frame": int(frame),
+            "position": [float(p[0]), float(p[1]), float(p[2])],
+            "pullEnabled": bool(pull_enabled),
+            "pullRadiusFrames": int(pull_radius_frames),
+            "pullPinnedEnds": bool(pull_pinned_ends),
+        }
+        with httpx.Client(base_url=self.base_url, timeout=timeout_s) as client:
+            res = client.patch(f"/api/elements/{camera_id}/animation/key", json=payload)
+            if res.status_code >= 400:
+                raise RuntimeError(f"Failed to update camera animation key: {res.status_code} {res.text}")
+            return dict(res.json())
+
+    def insert_camera_animation_key(
+        self,
+        camera_id: str,
+        *,
+        frame: int,
+        position: tuple[float, float, float] | list[float] | np.ndarray | None = None,
+        timeout_s: float = 10.0,
+    ) -> dict[str, Any]:
+        import httpx
+
+        payload: dict[str, Any] = {"frame": int(frame)}
+        if position is not None:
+            p = np.asarray(position, dtype=np.float64).reshape(3)
+            payload["position"] = [float(p[0]), float(p[1]), float(p[2])]
+
+        with httpx.Client(base_url=self.base_url, timeout=timeout_s) as client:
+            res = client.post(f"/api/elements/{camera_id}/animation/key", json=payload)
+            if res.status_code >= 400:
+                raise RuntimeError(f"Failed to insert camera animation key: {res.status_code} {res.text}")
+            return dict(res.json())
+
+    def delete_camera_animation_key(
+        self,
+        camera_id: str,
+        *,
+        frame: int,
+        timeout_s: float = 10.0,
+    ) -> dict[str, Any]:
+        import httpx
+
+        with httpx.Client(base_url=self.base_url, timeout=timeout_s) as client:
+            res = client.delete(f"/api/elements/{camera_id}/animation/key", params={"frame": str(int(frame))})
+            if res.status_code >= 400:
+                raise RuntimeError(f"Failed to delete camera animation key: {res.status_code} {res.text}")
+            return dict(res.json())
+
+    def duplicate_camera_animation_key(
+        self,
+        camera_id: str,
+        *,
+        source_frame: int,
+        target_frame: int,
+        timeout_s: float = 10.0,
+    ) -> dict[str, Any]:
+        import httpx
+
+        payload = {"sourceFrame": int(source_frame), "targetFrame": int(target_frame)}
+        with httpx.Client(base_url=self.base_url, timeout=timeout_s) as client:
+            res = client.post(f"/api/elements/{camera_id}/animation/key/duplicate", json=payload)
+            if res.status_code >= 400:
+                raise RuntimeError(f"Failed to duplicate camera animation key: {res.status_code} {res.text}")
+            return dict(res.json())
+
+    def smooth_camera_animation(
+        self,
+        camera_id: str,
+        *,
+        start_frame: int | None = None,
+        end_frame: int | None = None,
+        passes: int = 1,
+        pinned_ends: bool = True,
+        timeout_s: float = 10.0,
+    ) -> dict[str, Any]:
+        import httpx
+
+        payload: dict[str, Any] = {
+            "passes": int(passes),
+            "pinnedEnds": bool(pinned_ends),
+        }
+        if start_frame is not None:
+            payload["startFrame"] = int(start_frame)
+        if end_frame is not None:
+            payload["endFrame"] = int(end_frame)
+
+        with httpx.Client(base_url=self.base_url, timeout=timeout_s) as client:
+            res = client.post(f"/api/elements/{camera_id}/animation/smooth", json=payload)
+            if res.status_code >= 400:
+                raise RuntimeError(f"Failed to smooth camera animation: {res.status_code} {res.text}")
+            return dict(res.json())
+
+    def clear_camera_animation(
+        self,
+        camera_id: str,
+        *,
+        timeout_s: float = 10.0,
+    ) -> None:
+        import httpx
+
+        with httpx.Client(base_url=self.base_url, timeout=timeout_s) as client:
+            res = client.delete(f"/api/elements/{camera_id}/animation")
+            if res.status_code >= 400:
+                raise RuntimeError(f"Failed to clear camera animation: {res.status_code} {res.text}")
+
+    def get_camera_animation_trajectory(
+        self,
+        camera_id: str,
+        *,
+        start_frame: int | None = None,
+        end_frame: int | None = None,
+        stride: int = 1,
+        timeout_s: float = 10.0,
+    ) -> dict[str, Any]:
+        import httpx
+
+        params: dict[str, str] = {"stride": str(max(1, int(stride)))}
+        if start_frame is not None:
+            params["startFrame"] = str(int(start_frame))
+        if end_frame is not None:
+            params["endFrame"] = str(int(end_frame))
+
+        with httpx.Client(base_url=self.base_url, timeout=timeout_s) as client:
+            res = client.get(f"/api/elements/{camera_id}/animation/trajectory", params=params)
+            if res.status_code >= 400:
+                raise RuntimeError(f"Failed to get camera animation trajectory: {res.status_code} {res.text}")
+            return dict(res.json())

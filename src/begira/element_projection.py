@@ -4,7 +4,15 @@ from typing import Any
 
 import numpy as np
 
-from .elements import ElementBase, PointCloudElement, GaussianSplatElement, CameraElement, ImageElement
+from .elements import (
+    ElementBase,
+    PointCloudElement,
+    GaussianSplatElement,
+    CameraElement,
+    ImageElement,
+    Box3DElement,
+    Ellipsoid3DElement,
+)
 
 
 def bounds_from_positions(pos: np.ndarray) -> dict[str, list[float]]:
@@ -21,6 +29,18 @@ def bounds_from_position(pos: tuple[float, float, float], *, radius: float = 0.5
     return {
         "min": [x - r, y - r, z - r],
         "max": [x + r, y + r, z + r],
+    }
+
+
+def bounds_from_position_extents(
+    pos: tuple[float, float, float],
+    extents: tuple[float, float, float],
+) -> dict[str, list[float]]:
+    x, y, z = float(pos[0]), float(pos[1]), float(pos[2])
+    ex, ey, ez = float(extents[0]), float(extents[1]), float(extents[2])
+    return {
+        "min": [x - ex, y - ey, z - ez],
+        "max": [x + ex, y + ey, z + ez],
     }
 
 
@@ -74,6 +94,33 @@ def element_to_list_item(e: ElementBase) -> dict[str, Any]:
             **base,
             "summary": {"width": int(e.width), "height": int(e.height), "channels": int(e.channels)},
             "mimeType": str(e.mime_type),
+            "visible": bool(e.visible),
+            "deleted": bool(e.deleted),
+        }
+
+    if isinstance(e, Box3DElement):
+        half = (float(e.size[0]) * 0.5, float(e.size[1]) * 0.5, float(e.size[2]) * 0.5)
+        return {
+            **base,
+            "bounds": bounds_from_position_extents(e.position, half),
+            "summary": {"size": [float(e.size[0]), float(e.size[1]), float(e.size[2])]},
+            "position": list(e.position),
+            "rotation": list(e.rotation),
+            "size": [float(e.size[0]), float(e.size[1]), float(e.size[2])],
+            "color": [float(e.color[0]), float(e.color[1]), float(e.color[2])],
+            "visible": bool(e.visible),
+            "deleted": bool(e.deleted),
+        }
+
+    if isinstance(e, Ellipsoid3DElement):
+        return {
+            **base,
+            "bounds": bounds_from_position_extents(e.position, e.radii),
+            "summary": {"radii": [float(e.radii[0]), float(e.radii[1]), float(e.radii[2])]},
+            "position": list(e.position),
+            "rotation": list(e.rotation),
+            "radii": [float(e.radii[0]), float(e.radii[1]), float(e.radii[2])],
+            "color": [float(e.color[0]), float(e.color[1]), float(e.color[2])],
             "visible": bool(e.visible),
             "deleted": bool(e.deleted),
         }
@@ -177,6 +224,31 @@ def element_to_meta_item(e: ElementBase) -> dict[str, Any]:
                     "contentType": str(e.mime_type),
                 }
             },
+        }
+
+    if isinstance(e, Box3DElement):
+        half = (float(e.size[0]) * 0.5, float(e.size[1]) * 0.5, float(e.size[2]) * 0.5)
+        return {
+            **base,
+            "bounds": bounds_from_position_extents(e.position, half),
+            "position": list(e.position),
+            "rotation": list(e.rotation),
+            "size": [float(e.size[0]), float(e.size[1]), float(e.size[2])],
+            "color": [float(e.color[0]), float(e.color[1]), float(e.color[2])],
+            "visible": bool(e.visible),
+            "deleted": bool(e.deleted),
+        }
+
+    if isinstance(e, Ellipsoid3DElement):
+        return {
+            **base,
+            "bounds": bounds_from_position_extents(e.position, e.radii),
+            "position": list(e.position),
+            "rotation": list(e.rotation),
+            "radii": [float(e.radii[0]), float(e.radii[1]), float(e.radii[2])],
+            "color": [float(e.color[0]), float(e.color[1]), float(e.color[2])],
+            "visible": bool(e.visible),
+            "deleted": bool(e.deleted),
         }
 
     raise ValueError(f"Unsupported element type: {e.type}")

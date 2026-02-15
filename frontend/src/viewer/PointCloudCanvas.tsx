@@ -2,10 +2,12 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { OrbitControls, TransformControls } from '@react-three/drei'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from 'react'
 import * as THREE from 'three'
+import AnimateToolbar from './AnimateToolbar'
 import WASDControls from './WASDControls'
 import MultiPointCloudScene, { PointCloudRenderMode } from './MultiPointCloudScene'
 import GaussianSplatScene from './GaussianSplatScene'
 import CameraScene, { CAMERA_GIZMO_OVERLAY_LAYER, type CameraVisual } from './CameraScene'
+import CameraTrajectoryScene from './CameraTrajectoryScene'
 import {
   createClickGesture,
   isClickGesture,
@@ -16,10 +18,24 @@ import {
 import { usePointCloud } from './usePointCloud'
 import DebugOverlay, { isDebugOverlayEnabledFromUrl } from './DebugOverlay'
 import { getCoordinateConvention, parseCoordinateConventionFromUrl, type CoordinateConventionId } from './coordinateConventions'
-import { fetchViewerSettings, type SampleQuery } from './api'
+import {
+  fetchCameraAnimation,
+  fetchCameraAnimationTrajectory,
+  fetchViewerSettings,
+  insertCameraAnimationKey,
+  deleteCameraAnimationKey,
+  smoothCameraAnimation,
+  patchCameraAnimationKey,
+  putCameraAnimation,
+  type CameraAnimationTrack,
+  type CameraAnimationTrajectory,
+  type PutCameraAnimationRequest,
+  type SampleQuery,
+} from './api'
 import { usePageActivity } from './usePageActivity'
 
 type Bounds3 = { min: THREE.Vector3; max: THREE.Vector3 }
+type UndoableAction = { label: string; do: () => Promise<void>; undo: () => Promise<void> }
 
 // Viewer-space is always Three.js native Y-up.
 const VIEW_UP = new THREE.Vector3(0, 1, 0)
@@ -404,6 +420,8 @@ export default function PointCloudCanvas({
   sample,
   secondaryView = false,
   onTransformCommit,
+  onRunUserAction,
+  onSelectTimelineFrame,
 }: {
   cloudIds: string[]
   gaussianIds?: string[]
@@ -417,10 +435,12 @@ export default function PointCloudCanvas({
   gaussianMetaBounds?: { min: [number, number, number]; max: [number, number, number] }[]
   cameraMetaBounds?: { min: [number, number, number]; max: [number, number, number] }[]
   activeCameraId?: string | null
-  transformMode?: 'translate' | 'rotate'
+  transformMode?: 'translate' | 'rotate' | 'animate'
   sample?: SampleQuery
   secondaryView?: boolean
   onTransformCommit?: (id: string, position: [number, number, number], rotation: [number, number, number, number]) => void
+  onRunUserAction?: (action: UndoableAction) => Promise<void>
+  onSelectTimelineFrame?: (frame: number) => void
 }) {
   const background = useMemo(() => new THREE.Color('#0b1020'), [])
   const pageActive = usePageActivity()
@@ -656,6 +676,13 @@ export default function PointCloudCanvas({
   const [objectsVersion, setObjectsVersion] = useState(0)
   const lastTransformRef = useRef<string | null>(null)
   const lastLocalPoseRef = useRef<string | null>(null)
+  const [cameraAnimationTrack, setCameraAnimationTrack] = useState<CameraAnimationTrack | null>(null)
+  const [cameraAnimationTrajectory, setCameraAnimationTrajectory] = useState<CameraAnimationTrajectory | null>(null)
+  const [selectedTrajectoryKeyFrame, setSelectedTrajectoryKeyFrame] = useState<number | null>(null)
+  const trajectoryKeyObjectMapRef = useRef<Map<number, THREE.Object3D>>(new Map())
+  const [trajectoryObjectsVersion, setTrajectoryObjectsVersion] = useState(0)
+  const lastTrajectoryCommitRef = useRef<string | null>(null)
+  const trajectoryDragStartTrackRef = useRef<CameraAnimationTrack | null>(null)
   const registerObject = useCallback((id: string, obj: THREE.Object3D | null) => {
     if (obj) objectMapRef.current.set(id, obj)
     else objectMapRef.current.delete(id)
@@ -665,9 +692,30 @@ export default function PointCloudCanvas({
     if (!selectedId) return null
     return objectMapRef.current.get(selectedId) ?? null
   }, [selectedId, objectsVersion])
+  const registerTrajectoryKeyObject = useCallback((frame: number, obj: THREE.Object3D | null) => {
+    if (obj) trajectoryKeyObjectMapRef.current.set(frame, obj)
+    else trajectoryKeyObjectMapRef.current.delete(frame)
+    setTrajectoryObjectsVersion((v) => v + 1)
+  }, [])
+  const selectedTrajectoryKeyObject = useMemo(() => {
+    if (selectedTrajectoryKeyFrame === null) return null
+    return trajectoryKeyObjectMapRef.current.get(selectedTrajectoryKeyFrame) ?? null
+  }, [selectedTrajectoryKeyFrame, trajectoryObjectsVersion])
+  const selectedCameraForTrajectory = useMemo(() => {
+    if (!selectedId) return null
+    return cameraIds.includes(selectedId) ? selectedId : null
+  }, [cameraIds, selectedId])
+  const animateMode = transformMode === 'animate'
+  const trajectoryEditable = cameraAnimationTrack?.mode === 'orbit'
+  const trajectoryEditActive = trajectoryEditable && selectedTrajectoryKeyObject !== null
+  const [pullEnabled, setPullEnabled] = useState(true)
+  const [pullInfluenceFrames, setPullInfluenceFrames] = useState(12)
+  const [trajectoryOpBusy, setTrajectoryOpBusy] = useState(false)
+  const currentSampleFrame = sample?.frame !== undefined ? Math.round(sample.frame) : null
 
   const activeCameraReady = !!activeCameraMeta
   const followCameraActive = !activeCameraReady && !!followCameraMeta
+  const followSyncActive = !!(selectedCameraForTrajectory && activeCameraId && selectedCameraForTrajectory === activeCameraId)
   const hiddenCameraIds = useMemo(() => {
     const ids = new Set<string>()
     if (activeCameraId) ids.add(activeCameraId)
@@ -675,13 +723,357 @@ export default function PointCloudCanvas({
     return ids
   }, [activeCameraId, followCameraId])
 
+  const dispatchAnimationChanged = useCallback((cameraId: string) => {
+    window.dispatchEvent(
+      new CustomEvent('begira_camera_animation_changed', {
+        detail: { cameraId },
+      }),
+    )
+  }, [])
+
+  const cloneTrack = useCallback((track: CameraAnimationTrack): CameraAnimationTrack => {
+    return {
+      ...track,
+      up: [Number(track.up[0]), Number(track.up[1]), Number(track.up[2])] as [number, number, number],
+      params: { ...(track.params ?? {}) },
+      controlKeys: (track.controlKeys ?? []).map((key) => ({
+        frame: Number(key.frame),
+        positionLocal: [Number(key.positionLocal[0]), Number(key.positionLocal[1]), Number(key.positionLocal[2])] as [number, number, number],
+      })),
+    }
+  }, [])
+
+  const trackToPutRequest = useCallback((track: CameraAnimationTrack): PutCameraAnimationRequest => {
+    const req: PutCameraAnimationRequest = {
+      mode: track.mode,
+      targetId: track.targetId,
+      startFrame: Number(track.startFrame),
+      endFrame: Number(track.endFrame),
+      step: Number(track.step),
+      up: [Number(track.up[0]), Number(track.up[1]), Number(track.up[2])],
+    }
+    if (track.mode === 'orbit') {
+      const turns = Number(track.params?.turns)
+      if (Number.isFinite(turns)) req.turns = turns
+      const radius = Number(track.params?.radius)
+      if (Number.isFinite(radius)) req.radius = radius
+      const phase = Number(track.params?.phaseDeg)
+      if (Number.isFinite(phase)) req.phaseDeg = phase
+      req.controlKeys = (track.controlKeys ?? []).map((key) => ({
+        frame: Number(key.frame),
+        positionLocal: [Number(key.positionLocal[0]), Number(key.positionLocal[1]), Number(key.positionLocal[2])],
+      }))
+    }
+    return req
+  }, [])
+
+  const restoreTrack = useCallback(
+    async (cameraId: string, track: CameraAnimationTrack) => {
+      const restored = await putCameraAnimation(cameraId, trackToPutRequest(track))
+      setCameraAnimationTrack(restored)
+      dispatchAnimationChanged(cameraId)
+      return restored
+    },
+    [dispatchAnimationChanged, trackToPutRequest],
+  )
+
+  const runAnimationUserAction = useCallback(
+    async (action: UndoableAction) => {
+      if (onRunUserAction) {
+        await onRunUserAction(action)
+        return
+      }
+      await action.do()
+    },
+    [onRunUserAction],
+  )
+
+  const selectTimelineFrame = useCallback(
+    (frame: number) => {
+      if (!onSelectTimelineFrame) return
+      onSelectTimelineFrame(Math.round(frame))
+    },
+    [onSelectTimelineFrame],
+  )
+
+  const resolveOperationFrame = useCallback(
+    (preferred?: number | null): number => {
+      if (currentSampleFrame !== null) return currentSampleFrame
+      if (preferred !== null && preferred !== undefined) return Math.round(preferred)
+      if (selectedTrajectoryKeyFrame !== null) return Math.round(selectedTrajectoryKeyFrame)
+      if (cameraAnimationTrack) return Math.round(cameraAnimationTrack.startFrame)
+      return 0
+    },
+    [cameraAnimationTrack, currentSampleFrame, selectedTrajectoryKeyFrame],
+  )
+
+  const nearestTrajectoryFrame = useCallback(
+    (point: [number, number, number]): number => {
+      if (!cameraAnimationTrajectory || cameraAnimationTrajectory.frames.length === 0) {
+        return resolveOperationFrame()
+      }
+      let bestFrame = Number(cameraAnimationTrajectory.frames[0] ?? resolveOperationFrame())
+      let bestD2 = Number.POSITIVE_INFINITY
+      for (let i = 0; i < cameraAnimationTrajectory.frames.length; i += 1) {
+        const p = cameraAnimationTrajectory.positions[i]
+        if (!p) continue
+        const dx = p[0] - point[0]
+        const dy = p[1] - point[1]
+        const dz = p[2] - point[2]
+        const d2 = dx * dx + dy * dy + dz * dz
+        if (d2 < bestD2) {
+          bestD2 = d2
+          bestFrame = Number(cameraAnimationTrajectory.frames[i])
+        }
+      }
+      return Math.round(bestFrame)
+    },
+    [cameraAnimationTrajectory, resolveOperationFrame],
+  )
+
+  const addTrajectoryKey = useCallback(
+    async (worldPosition?: [number, number, number]) => {
+      if (!selectedCameraForTrajectory || !trajectoryEditable || followSyncActive) return
+      if (!cameraAnimationTrack) return
+      const cameraId = selectedCameraForTrajectory
+      const beforeTrack = cloneTrack(cameraAnimationTrack)
+      const frame = worldPosition ? nearestTrajectoryFrame(worldPosition) : resolveOperationFrame()
+      setTrajectoryOpBusy(true)
+      try {
+        await runAnimationUserAction({
+          label: 'Add Animation Key',
+          do: async () => {
+            const track = await insertCameraAnimationKey(cameraId, {
+              frame,
+              ...(worldPosition ? { position: worldPosition } : {}),
+            })
+            setCameraAnimationTrack(track)
+            setSelectedTrajectoryKeyFrame(frame)
+            selectTimelineFrame(frame)
+            dispatchAnimationChanged(cameraId)
+          },
+          undo: async () => {
+            await restoreTrack(cameraId, beforeTrack)
+            if (beforeTrack.controlKeys.some((key) => Number(key.frame) === frame)) {
+              setSelectedTrajectoryKeyFrame(frame)
+              selectTimelineFrame(frame)
+            } else {
+              setSelectedTrajectoryKeyFrame(null)
+            }
+          },
+        })
+      } catch (err) {
+        console.warn('Failed to insert camera key', err)
+      } finally {
+        setTrajectoryOpBusy(false)
+      }
+    },
+    [
+      cameraAnimationTrack,
+      cloneTrack,
+      dispatchAnimationChanged,
+      followSyncActive,
+      nearestTrajectoryFrame,
+      resolveOperationFrame,
+      restoreTrack,
+      runAnimationUserAction,
+      selectTimelineFrame,
+      selectedCameraForTrajectory,
+      trajectoryEditable,
+    ],
+  )
+
+  const deleteSelectedTrajectoryKey = useCallback(async () => {
+    if (!selectedCameraForTrajectory || !trajectoryEditable || followSyncActive) return
+    if (selectedTrajectoryKeyFrame === null) return
+    if (!cameraAnimationTrack) return
+    const cameraId = selectedCameraForTrajectory
+    const frame = Math.round(selectedTrajectoryKeyFrame)
+    const beforeTrack = cloneTrack(cameraAnimationTrack)
+    setTrajectoryOpBusy(true)
+    try {
+      await runAnimationUserAction({
+        label: 'Delete Animation Key',
+        do: async () => {
+          const track = await deleteCameraAnimationKey(cameraId, frame)
+          setCameraAnimationTrack(track)
+          setSelectedTrajectoryKeyFrame(null)
+          dispatchAnimationChanged(cameraId)
+        },
+        undo: async () => {
+          await restoreTrack(cameraId, beforeTrack)
+          setSelectedTrajectoryKeyFrame(frame)
+          selectTimelineFrame(frame)
+        },
+      })
+    } catch (err) {
+      console.warn('Failed to delete camera key', err)
+    } finally {
+      setTrajectoryOpBusy(false)
+    }
+  }, [
+    cameraAnimationTrack,
+    cloneTrack,
+    dispatchAnimationChanged,
+    followSyncActive,
+    restoreTrack,
+    runAnimationUserAction,
+    selectTimelineFrame,
+    selectedCameraForTrajectory,
+    selectedTrajectoryKeyFrame,
+    trajectoryEditable,
+  ])
+
+  const smoothTrajectoryKeys = useCallback(async () => {
+    if (!selectedCameraForTrajectory || !trajectoryEditable || followSyncActive) return
+    if (!cameraAnimationTrack) return
+    const cameraId = selectedCameraForTrajectory
+    const beforeTrack = cloneTrack(cameraAnimationTrack)
+    setTrajectoryOpBusy(true)
+    try {
+      await runAnimationUserAction({
+        label: 'Smooth Animation Keys',
+        do: async () => {
+          const track = await smoothCameraAnimation(cameraId, {
+            passes: 1,
+            pinnedEnds: false,
+          })
+          setCameraAnimationTrack(track)
+          dispatchAnimationChanged(cameraId)
+        },
+        undo: async () => {
+          await restoreTrack(cameraId, beforeTrack)
+        },
+      })
+    } catch (err) {
+      console.warn('Failed to smooth camera animation', err)
+    } finally {
+      setTrajectoryOpBusy(false)
+    }
+  }, [
+    cameraAnimationTrack,
+    cloneTrack,
+    dispatchAnimationChanged,
+    followSyncActive,
+    restoreTrack,
+    runAnimationUserAction,
+    selectedCameraForTrajectory,
+    trajectoryEditable,
+  ])
+
   useEffect(() => {
     if (orbitRef.current) {
       orbitRef.current.enabled = !activeCameraReady
     }
   }, [activeCameraReady])
 
+  useEffect(() => {
+    if (!selectedCameraForTrajectory || !pageActive) {
+      setCameraAnimationTrack(null)
+      setCameraAnimationTrajectory(null)
+      setSelectedTrajectoryKeyFrame(null)
+      trajectoryKeyObjectMapRef.current.clear()
+      setTrajectoryObjectsVersion((v) => v + 1)
+      return
+    }
+
+    let cancelled = false
+
+    const sync = async () => {
+      try {
+        const track = await fetchCameraAnimation(selectedCameraForTrajectory)
+        if (cancelled) return
+        setCameraAnimationTrack(track)
+        if (!track) {
+          setCameraAnimationTrajectory(null)
+          setSelectedTrajectoryKeyFrame(null)
+          return
+        }
+        const trajectory = await fetchCameraAnimationTrajectory(selectedCameraForTrajectory, {
+          startFrame: track.startFrame,
+          endFrame: track.endFrame,
+          stride: 1,
+        })
+        if (cancelled) return
+        setCameraAnimationTrajectory(trajectory)
+      } catch {
+        if (cancelled) return
+        setCameraAnimationTrack(null)
+        setCameraAnimationTrajectory(null)
+        setSelectedTrajectoryKeyFrame(null)
+      }
+    }
+
+    void sync()
+    const intervalId = window.setInterval(() => void sync(), 1000)
+
+    const onChanged = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ cameraId?: string }>).detail
+      if (detail?.cameraId && detail.cameraId !== selectedCameraForTrajectory) return
+      void sync()
+    }
+    window.addEventListener('begira_camera_animation_changed', onChanged as EventListener)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
+      window.removeEventListener('begira_camera_animation_changed', onChanged as EventListener)
+    }
+  }, [pageActive, selectedCameraForTrajectory])
+
+  useEffect(() => {
+    if (!cameraAnimationTrack || cameraAnimationTrack.mode !== 'orbit') {
+      setSelectedTrajectoryKeyFrame(null)
+      return
+    }
+    const valid = new Set(cameraAnimationTrack.controlKeys.map((k) => Number(k.frame)))
+    setSelectedTrajectoryKeyFrame((prev) => {
+      if (prev !== null && valid.has(prev)) return prev
+      return null
+    })
+  }, [cameraAnimationTrack])
+
+  useEffect(() => {
+    if (!animateMode || secondaryView) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase()
+      if (tag === 'input' || tag === 'textarea' || (e.target as HTMLElement | null)?.isContentEditable) return
+      if (!selectedCameraForTrajectory || !trajectoryEditable || followSyncActive) return
+      const key = e.key.toLowerCase()
+      if (key === 'a') {
+        e.preventDefault()
+        void addTrajectoryKey()
+        return
+      }
+      if (key === 'delete' || key === 'backspace') {
+        e.preventDefault()
+        void deleteSelectedTrajectoryKey()
+        return
+      }
+      if (key === 's') {
+        e.preventDefault()
+        void smoothTrajectoryKeys()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [
+    addTrajectoryKey,
+    animateMode,
+    deleteSelectedTrajectoryKey,
+    followSyncActive,
+    secondaryView,
+    selectedCameraForTrajectory,
+    smoothTrajectoryKeys,
+    trajectoryEditable,
+  ])
+
+  const animateToolbarVisible = animateMode && !secondaryView
+  const animateToolbarEnabled = !!selectedCameraForTrajectory && !!trajectoryEditable && !followSyncActive && !trajectoryOpBusy
+  const trajectoryKeyCount = trajectoryEditable ? cameraAnimationTrack?.controlKeys.length ?? 0 : 0
+
   return (
+    <>
     <Canvas
       // Do NOT key the canvas by conventionId. That causes a full remount and camera reset.
       frameloop={pageActive ? 'demand' : 'never'}
@@ -709,6 +1101,7 @@ export default function PointCloudCanvas({
         const wasClick = isClickGesture(canvasGesture.current, e.nativeEvent)
         onPointerUpGesture(canvasGesture.current)
         if (!wasClick) return
+        if (animateMode) return
         setFollowCameraId(null)
         onSelect(null)
       }}
@@ -783,6 +1176,25 @@ export default function PointCloudCanvas({
           }}
           onRegisterObject={registerObject}
         />
+        {selectedCameraForTrajectory && animateMode && !secondaryView && (
+          <CameraTrajectoryScene
+            track={cameraAnimationTrack}
+            trajectory={cameraAnimationTrajectory}
+            selectedKeyFrame={selectedTrajectoryKeyFrame}
+            editable={trajectoryEditable}
+            onSelectKey={(frame) => {
+              onSelect(selectedCameraForTrajectory)
+              setSelectedTrajectoryKeyFrame(frame)
+              setFollowCameraId(null)
+              if (frame !== null) selectTimelineFrame(frame)
+            }}
+            onShiftClickPath={(point) => {
+              if (!animateMode) return
+              void addTrajectoryKey(point)
+            }}
+            onRegisterKeyObject={registerTrajectoryKeyObject}
+          />
+        )}
       </group>
 
       {!activeCameraReady && (
@@ -819,7 +1231,60 @@ export default function PointCloudCanvas({
         />
       )}
 
-      {selectedObject && onTransformCommit && !followCameraActive && (
+      {selectedTrajectoryKeyObject && selectedCameraForTrajectory && animateMode && !secondaryView && trajectoryEditable && selectedTrajectoryKeyFrame !== null && (
+        <TransformControls
+          object={selectedTrajectoryKeyObject}
+          mode="translate"
+          space="world"
+          onMouseDown={() => {
+            if (orbitRef.current) orbitRef.current.enabled = false
+            trajectoryDragStartTrackRef.current = cameraAnimationTrack ? cloneTrack(cameraAnimationTrack) : null
+            selectTimelineFrame(selectedTrajectoryKeyFrame)
+          }}
+          onObjectChange={() => {
+            selectTimelineFrame(selectedTrajectoryKeyFrame)
+          }}
+          onMouseUp={() => {
+            if (orbitRef.current) orbitRef.current.enabled = true
+            if (!selectedTrajectoryKeyObject) return
+            if (!selectedCameraForTrajectory || selectedTrajectoryKeyFrame === null) return
+            const pos = selectedTrajectoryKeyObject.position
+            const key = `${selectedCameraForTrajectory}|${selectedTrajectoryKeyFrame}|${pos.x.toFixed(6)}|${pos.y.toFixed(6)}|${pos.z.toFixed(6)}`
+            if (lastTrajectoryCommitRef.current === key) return
+            lastTrajectoryCommitRef.current = key
+            const cameraId = selectedCameraForTrajectory
+            const frame = selectedTrajectoryKeyFrame
+            const nextPosition: [number, number, number] = [pos.x, pos.y, pos.z]
+            const beforeTrack =
+              trajectoryDragStartTrackRef.current ?? (cameraAnimationTrack ? cloneTrack(cameraAnimationTrack) : null)
+            if (!beforeTrack) return
+            trajectoryDragStartTrackRef.current = null
+            void runAnimationUserAction({
+              label: 'Move Animation Key',
+              do: async () => {
+                const track = await patchCameraAnimationKey(cameraId, {
+                  frame,
+                  position: nextPosition,
+                  pullEnabled,
+                  pullRadiusFrames: pullInfluenceFrames,
+                  pullPinnedEnds: false,
+                })
+                setCameraAnimationTrack(track)
+                dispatchAnimationChanged(cameraId)
+              },
+              undo: async () => {
+                await restoreTrack(cameraId, beforeTrack)
+                setSelectedTrajectoryKeyFrame(frame)
+                selectTimelineFrame(frame)
+              },
+            }).catch((err) => {
+              console.warn('Failed to update camera animation key', err)
+            })
+          }}
+        />
+      )}
+
+      {selectedObject && onTransformCommit && !followCameraActive && !trajectoryEditActive && !animateMode && (
         <TransformControls
           object={selectedObject}
           mode={transformMode}
@@ -893,5 +1358,20 @@ export default function PointCloudCanvas({
         />
       )}
     </Canvas>
+      <AnimateToolbar
+        visible={animateToolbarVisible}
+        enabled={animateToolbarEnabled}
+        followSyncActive={followSyncActive}
+        selectedFrame={selectedTrajectoryKeyFrame}
+        keyCount={trajectoryKeyCount}
+        pullEnabled={pullEnabled}
+        pullInfluenceFrames={pullInfluenceFrames}
+        onTogglePull={setPullEnabled}
+        onChangePullInfluenceFrames={setPullInfluenceFrames}
+        onAddKey={() => void addTrajectoryKey()}
+        onDeleteKey={() => void deleteSelectedTrajectoryKey()}
+        onSmooth={() => void smoothTrajectoryKeys()}
+      />
+    </>
   )
 }

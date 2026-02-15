@@ -4,10 +4,27 @@ import threading
 import time
 import uuid
 from dataclasses import replace
-
 import numpy as np
 
-from .elements import ElementBase, PointCloudElement, GaussianSplatElement, CameraElement, ImageElement
+from .animation import (
+    CameraAnimationTrack,
+    CameraControlKey,
+    bump_track_revision,
+    look_at_quaternion,
+    normalized_vec3,
+    pose_from_matrix,
+    pose_matrix,
+    sample_catmull_rom,
+)
+from .elements import (
+    ElementBase,
+    PointCloudElement,
+    GaussianSplatElement,
+    CameraElement,
+    ImageElement,
+    Box3DElement,
+    Ellipsoid3DElement,
+)
 from .timeline import WriteTarget, ElementTemporalRecord
 
 class InMemoryRegistry:
@@ -15,6 +32,7 @@ class InMemoryRegistry:
         self._lock = threading.RLock()
         self._elements: dict[str, ElementBase] = {}
         self._timeline: dict[str, ElementTemporalRecord[ElementBase]] = {}
+        self._camera_animations: dict[str, CameraAnimationTrack] = {}
         self._global_revision = 0
         # Deterministic palette colors for point clouds that don't provide per-point colors.
         # Colors are uint8 RGB.
@@ -79,6 +97,31 @@ class InMemoryRegistry:
                 raise ValueError("timestamp must be finite")
         return frame_v, ts_v
 
+    @staticmethod
+    def _normalize_positive_vec3(
+        value: tuple[float, float, float] | list[float] | np.ndarray,
+        *,
+        name: str,
+    ) -> tuple[float, float, float]:
+        arr = np.asarray(value, dtype=np.float64).reshape(3)
+        if not np.all(np.isfinite(arr)):
+            raise ValueError(f"{name} must contain finite numeric values")
+        if np.any(arr <= 0.0):
+            raise ValueError(f"{name} components must be > 0")
+        return (float(arr[0]), float(arr[1]), float(arr[2]))
+
+    @staticmethod
+    def _normalize_color3(
+        value: tuple[float, float, float] | list[float] | np.ndarray,
+        *,
+        name: str = "color",
+    ) -> tuple[float, float, float]:
+        arr = np.asarray(value, dtype=np.float64).reshape(3)
+        if not np.all(np.isfinite(arr)):
+            raise ValueError(f"{name} must contain finite numeric values")
+        arr = np.clip(arr, 0.0, 1.0)
+        return (float(arr[0]), float(arr[1]), float(arr[2]))
+
     def _resolve_write_target_locked(
         self,
         *,
@@ -142,6 +185,513 @@ class InMemoryRegistry:
     def global_revision(self) -> int:
         with self._lock:
             return self._global_revision
+
+    def _require_element_for_frame_locked(self, element_id: str, frame: int) -> ElementBase:
+        elem = self._sample_element_locked(element_id, frame=int(frame), timestamp=None)
+        if elem is None:
+            raise ValueError(f"Element '{element_id}' has no sample at frame {int(frame)}")
+        return elem
+
+    def _require_pose_for_frame_locked(self, element_id: str, frame: int) -> tuple[np.ndarray, np.ndarray]:
+        elem = self._require_element_for_frame_locked(element_id, frame)
+        pos = np.asarray(elem.position, dtype=np.float64).reshape(3)
+        rot = np.asarray(elem.rotation, dtype=np.float64).reshape(4)
+        return pos, rot
+
+    @staticmethod
+    def _to_pose_tuple(position: np.ndarray, rotation: np.ndarray) -> tuple[tuple[float, float, float], tuple[float, float, float, float]]:
+        pos = (float(position[0]), float(position[1]), float(position[2]))
+        q = np.asarray(rotation, dtype=np.float64).reshape(4)
+        n = float(np.linalg.norm(q))
+        if n < 1e-12:
+            raise ValueError("Rotation quaternion norm is too close to zero")
+        q = q / n
+        quat = (float(q[0]), float(q[1]), float(q[2]), float(q[3]))
+        return pos, quat
+
+    def _validate_camera_animation_track_locked(self, track: CameraAnimationTrack) -> None:
+        camera = self._elements.get(track.camera_id)
+        if camera is None or not isinstance(camera, CameraElement):
+            raise KeyError(track.camera_id)
+
+        target = self._elements.get(track.target_id)
+        if target is None:
+            raise KeyError(track.target_id)
+        if track.camera_id == track.target_id:
+            raise ValueError("camera_id and target_id must be different")
+        if isinstance(target, ImageElement):
+            raise ValueError("Image elements cannot be used as animation targets")
+
+        start = int(track.start_frame)
+        end = int(track.end_frame)
+        if start < 0:
+            raise ValueError("start_frame must be >= 0")
+        if end < start:
+            raise ValueError("end_frame must be >= start_frame")
+        if int(track.step) <= 0:
+            raise ValueError("step must be a positive integer")
+
+        self._require_element_for_frame_locked(track.target_id, start)
+        self._require_element_for_frame_locked(track.camera_id, start)
+
+        up_v = np.asarray(track.up, dtype=np.float64).reshape(3)
+        if not np.all(np.isfinite(up_v)):
+            raise ValueError("up must contain finite numeric values")
+        if float(np.linalg.norm(up_v)) < 1e-12:
+            raise ValueError("up vector cannot be near zero")
+
+        if track.mode == "orbit":
+            if track.interpolation != "catmull_rom":
+                raise ValueError("Only catmull_rom interpolation is supported")
+            turns = float(track.params.get("turns", 1.0))
+            if not np.isfinite(turns) or abs(turns) < 1e-9:
+                raise ValueError("orbit turns must be a finite non-zero number")
+            radius = track.params.get("radius")
+            if radius is not None:
+                radius_v = float(radius)
+                if not np.isfinite(radius_v) or radius_v <= 0.0:
+                    raise ValueError("orbit radius must be a positive finite number")
+            phase = float(track.params.get("phaseDeg", 0.0))
+            if not np.isfinite(phase):
+                raise ValueError("orbit phaseDeg must be finite")
+            for key in track.control_keys:
+                if int(key.frame) < start or int(key.frame) > end:
+                    raise ValueError("control key frame is outside animation range")
+        elif track.mode != "follow":
+            raise ValueError(f"Unsupported animation mode: {track.mode!r}")
+
+    def _build_default_orbit_keys_locked(self, track: CameraAnimationTrack) -> tuple[CameraControlKey, ...]:
+        start = int(track.start_frame)
+        end = int(track.end_frame)
+        step = max(1, int(track.step))
+
+        cam_pos, cam_rot = self._require_pose_for_frame_locked(track.camera_id, start)
+        target_pos, target_rot = self._require_pose_for_frame_locked(track.target_id, start)
+
+        t_cam_start = pose_matrix(cam_pos, cam_rot)
+        t_target_start = pose_matrix(target_pos, target_rot)
+        t_local = np.linalg.inv(t_target_start) @ t_cam_start
+        local_start_offset = np.asarray(t_local[:3, 3], dtype=np.float64)
+
+        radius_param = track.params.get("radius")
+        if radius_param is None:
+            radius = float(np.linalg.norm(local_start_offset))
+            if not np.isfinite(radius) or radius <= 1e-6:
+                radius = 1.0
+        else:
+            radius = float(radius_param)
+
+        up_world = normalized_vec3(track.up, (0.0, 0.0, 1.0))
+        r_target_start = pose_matrix((0.0, 0.0, 0.0), target_rot)[:3, :3]
+        up_local = normalized_vec3(r_target_start.T @ up_world, (0.0, 0.0, 1.0))
+
+        proj = local_start_offset - up_local * float(np.dot(local_start_offset, up_local))
+        proj_n = float(np.linalg.norm(proj))
+        if proj_n < 1e-6:
+            fallback = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+            if abs(float(np.dot(fallback, up_local))) > 0.95:
+                fallback = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+            proj = np.cross(up_local, fallback)
+            proj_n = float(np.linalg.norm(proj))
+            if proj_n < 1e-6:
+                proj = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+                proj_n = 1.0
+        axis_a = (proj / proj_n) * float(radius)
+        axis_b = normalized_vec3(np.cross(up_local, axis_a), (0.0, 1.0, 0.0)) * float(radius)
+
+        frames = list(range(start, end + 1, step))
+        if not frames:
+            frames = [start]
+        if frames[-1] != end:
+            frames.append(end)
+        if start == end:
+            frames = [start]
+
+        turns = float(track.params.get("turns", 1.0))
+        phase = np.deg2rad(float(track.params.get("phaseDeg", 0.0)))
+        span = max(1, end - start)
+
+        out: list[CameraControlKey] = []
+        for f in frames:
+            t = float(f - start) / float(span)
+            angle = phase + (2.0 * np.pi * turns * t)
+            local = axis_a * float(np.cos(angle)) + axis_b * float(np.sin(angle))
+            out.append(
+                CameraControlKey(
+                    frame=int(f),
+                    position_local=(float(local[0]), float(local[1]), float(local[2])),
+                )
+            )
+        return tuple(out)
+
+    def _bake_follow_track_locked(self, track: CameraAnimationTrack) -> None:
+        start = int(track.start_frame)
+        end = int(track.end_frame)
+
+        cam_pos_0, cam_rot_0 = self._require_pose_for_frame_locked(track.camera_id, start)
+        target_pos_0, target_rot_0 = self._require_pose_for_frame_locked(track.target_id, start)
+
+        t_cam_0 = pose_matrix(cam_pos_0, cam_rot_0)
+        t_target_0 = pose_matrix(target_pos_0, target_rot_0)
+        t_rel = np.linalg.inv(t_target_0) @ t_cam_0
+
+        for frame in range(start, end + 1):
+            target_pos_f, target_rot_f = self._require_pose_for_frame_locked(track.target_id, frame)
+            t_target_f = pose_matrix(target_pos_f, target_rot_f)
+            t_cam_f = t_target_f @ t_rel
+            pos_t, quat_t = pose_from_matrix(t_cam_f)
+            self.update_element_meta(
+                track.camera_id,
+                position=pos_t,
+                rotation=quat_t,
+                frame=int(frame),
+            )
+
+    def _bake_orbit_track_locked(self, track: CameraAnimationTrack) -> None:
+        start = int(track.start_frame)
+        end = int(track.end_frame)
+        up_world = normalized_vec3(track.up, (0.0, 0.0, 1.0))
+        control_keys = tuple(sorted(track.control_keys, key=lambda k: int(k.frame)))
+        if not control_keys:
+            raise ValueError("orbit track requires control keys")
+
+        for frame in range(start, end + 1):
+            local_offset = sample_catmull_rom(control_keys, frame)
+            target_pos_f, target_rot_f = self._require_pose_for_frame_locked(track.target_id, frame)
+            t_target_f = pose_matrix(target_pos_f, target_rot_f)
+            world_h = t_target_f @ np.array([float(local_offset[0]), float(local_offset[1]), float(local_offset[2]), 1.0], dtype=np.float64)
+            cam_pos = world_h[:3]
+            cam_quat = look_at_quaternion(cam_pos, target_pos_f, up_world)
+            pos_t, quat_t = self._to_pose_tuple(cam_pos, np.asarray(cam_quat, dtype=np.float64))
+            self.update_element_meta(
+                track.camera_id,
+                position=pos_t,
+                rotation=quat_t,
+                frame=int(frame),
+            )
+
+    def _bake_camera_track_locked(self, track: CameraAnimationTrack) -> CameraAnimationTrack:
+        built = track
+        if built.mode == "orbit" and len(built.control_keys) == 0:
+            built = replace(built, control_keys=self._build_default_orbit_keys_locked(built))
+
+        if built.mode == "follow":
+            self._bake_follow_track_locked(built)
+        elif built.mode == "orbit":
+            self._bake_orbit_track_locked(built)
+        else:
+            raise ValueError(f"Unsupported animation mode: {built.mode!r}")
+        return built
+
+    def get_camera_animation(self, camera_id: str) -> CameraAnimationTrack | None:
+        with self._lock:
+            return self._camera_animations.get(camera_id)
+
+    def set_camera_animation(self, track: CameraAnimationTrack) -> CameraAnimationTrack:
+        with self._lock:
+            self._validate_camera_animation_track_locked(track)
+            prev = self._camera_animations.get(track.camera_id)
+            if prev is None:
+                working = replace(track, revision=1, updated_at=time.time())
+            else:
+                working = bump_track_revision(replace(track, revision=prev.revision, updated_at=prev.updated_at))
+
+            baked = self._bake_camera_track_locked(working)
+            self._camera_animations[baked.camera_id] = baked
+            self._global_revision += 1
+            return baked
+
+    def clear_camera_animation(self, camera_id: str) -> bool:
+        with self._lock:
+            existed = camera_id in self._camera_animations
+            if existed:
+                del self._camera_animations[camera_id]
+                self._global_revision += 1
+            return existed
+
+    def update_camera_animation_key(
+        self,
+        camera_id: str,
+        frame: int,
+        new_world_position: tuple[float, float, float] | list[float] | np.ndarray,
+        *,
+        pull_enabled: bool = False,
+        pull_radius_frames: int = 0,
+        pull_pinned_ends: bool = True,
+    ) -> CameraAnimationTrack:
+        with self._lock:
+            track = self._camera_animations.get(camera_id)
+            if track is None:
+                raise KeyError(camera_id)
+            if track.mode != "orbit":
+                raise ValueError("Only orbit animation keys are editable")
+
+            frame_i = int(frame)
+            if frame_i < int(track.start_frame) or frame_i > int(track.end_frame):
+                raise ValueError("frame is outside animation range")
+
+            world = np.asarray(new_world_position, dtype=np.float64).reshape(3)
+            target_pos, target_rot = self._require_pose_for_frame_locked(track.target_id, frame_i)
+            t_target = pose_matrix(target_pos, target_rot)
+            local_h = np.linalg.inv(t_target) @ np.array([float(world[0]), float(world[1]), float(world[2]), 1.0], dtype=np.float64)
+            new_local = np.asarray([float(local_h[0]), float(local_h[1]), float(local_h[2])], dtype=np.float64)
+
+            by_frame: dict[int, CameraControlKey] = {int(k.frame): k for k in track.control_keys}
+            if frame_i in by_frame:
+                old_local = np.asarray(by_frame[frame_i].position_local, dtype=np.float64).reshape(3)
+            else:
+                old_local = sample_catmull_rom(track.control_keys, frame_i)
+            delta_local = new_local - old_local
+
+            radius_i = max(0, int(pull_radius_frames))
+            sigma = max(float(radius_i) / 2.5, 1e-6)
+            start_frame_i = int(track.start_frame)
+            end_frame_i = int(track.end_frame)
+            frame_span = max(1, end_frame_i - start_frame_i)
+            use_pull = bool(pull_enabled) and radius_i > 0
+
+            updated_by_frame: dict[int, CameraControlKey] = {}
+            for key in track.control_keys:
+                key_frame = int(key.frame)
+                base_local = np.asarray(key.position_local, dtype=np.float64).reshape(3)
+                next_local = base_local
+
+                if key_frame == frame_i:
+                    next_local = new_local
+                elif use_pull:
+                    if bool(pull_pinned_ends) and key_frame in (start_frame_i, end_frame_i):
+                        next_local = base_local
+                    else:
+                        d_linear = abs(key_frame - frame_i)
+                        # Orbit keys are a closed loop over [start_frame, end_frame].
+                        d = min(d_linear, frame_span - d_linear)
+                        if d <= radius_i:
+                            w = float(np.exp(-0.5 * ((float(d) / sigma) ** 2)))
+                            next_local = base_local + delta_local * w
+
+                updated_by_frame[key_frame] = CameraControlKey(
+                    frame=key_frame,
+                    position_local=(float(next_local[0]), float(next_local[1]), float(next_local[2])),
+                )
+
+            if frame_i not in updated_by_frame:
+                updated_by_frame[frame_i] = CameraControlKey(
+                    frame=frame_i,
+                    position_local=(float(new_local[0]), float(new_local[1]), float(new_local[2])),
+                )
+
+            keys = tuple(sorted(updated_by_frame.values(), key=lambda k: int(k.frame)))
+            if len(keys) < 2:
+                raise ValueError("orbit animation requires at least 2 control keys")
+
+            updated = bump_track_revision(replace(track, control_keys=keys))
+            baked = self._bake_camera_track_locked(updated)
+            self._camera_animations[camera_id] = baked
+            self._global_revision += 1
+            return baked
+
+    def insert_camera_animation_key(
+        self,
+        camera_id: str,
+        frame: int,
+        world_position: tuple[float, float, float] | list[float] | np.ndarray | None = None,
+    ) -> CameraAnimationTrack:
+        with self._lock:
+            track = self._camera_animations.get(camera_id)
+            if track is None:
+                raise KeyError(camera_id)
+            if track.mode != "orbit":
+                raise ValueError("Only orbit animation keys are editable")
+
+            frame_i = int(frame)
+            if frame_i < int(track.start_frame) or frame_i > int(track.end_frame):
+                raise ValueError("frame is outside animation range")
+
+            if world_position is None:
+                if len(track.control_keys) > 0:
+                    local = sample_catmull_rom(track.control_keys, frame_i)
+                else:
+                    cam_elem = self._require_element_for_frame_locked(camera_id, frame_i)
+                    cam_world = np.asarray(cam_elem.position, dtype=np.float64).reshape(3)
+                    target_pos, target_rot = self._require_pose_for_frame_locked(track.target_id, frame_i)
+                    t_target = pose_matrix(target_pos, target_rot)
+                    local_h = np.linalg.inv(t_target) @ np.array([float(cam_world[0]), float(cam_world[1]), float(cam_world[2]), 1.0], dtype=np.float64)
+                    local = np.asarray(local_h[:3], dtype=np.float64)
+            else:
+                target_pos, target_rot = self._require_pose_for_frame_locked(track.target_id, frame_i)
+                t_target = pose_matrix(target_pos, target_rot)
+                world = np.asarray(world_position, dtype=np.float64).reshape(3)
+                local_h = np.linalg.inv(t_target) @ np.array([float(world[0]), float(world[1]), float(world[2]), 1.0], dtype=np.float64)
+                local = np.asarray(local_h[:3], dtype=np.float64)
+
+            by_frame: dict[int, CameraControlKey] = {int(k.frame): k for k in track.control_keys}
+            by_frame[frame_i] = CameraControlKey(
+                frame=frame_i,
+                position_local=(float(local[0]), float(local[1]), float(local[2])),
+            )
+            keys = tuple(sorted(by_frame.values(), key=lambda k: int(k.frame)))
+            if len(keys) < 2:
+                raise ValueError("orbit animation requires at least 2 control keys")
+
+            updated = bump_track_revision(replace(track, control_keys=keys))
+            baked = self._bake_camera_track_locked(updated)
+            self._camera_animations[camera_id] = baked
+            self._global_revision += 1
+            return baked
+
+    def delete_camera_animation_key(
+        self,
+        camera_id: str,
+        frame: int,
+    ) -> CameraAnimationTrack:
+        with self._lock:
+            track = self._camera_animations.get(camera_id)
+            if track is None:
+                raise KeyError(camera_id)
+            if track.mode != "orbit":
+                raise ValueError("Only orbit animation keys are editable")
+
+            frame_i = int(frame)
+            by_frame: dict[int, CameraControlKey] = {int(k.frame): k for k in track.control_keys}
+            if frame_i not in by_frame:
+                raise ValueError("control key does not exist at requested frame")
+
+            del by_frame[frame_i]
+            keys = tuple(sorted(by_frame.values(), key=lambda k: int(k.frame)))
+            if len(keys) < 2:
+                raise ValueError("orbit animation requires at least 2 control keys")
+
+            updated = bump_track_revision(replace(track, control_keys=keys))
+            baked = self._bake_camera_track_locked(updated)
+            self._camera_animations[camera_id] = baked
+            self._global_revision += 1
+            return baked
+
+    def duplicate_camera_animation_key(
+        self,
+        camera_id: str,
+        *,
+        source_frame: int,
+        target_frame: int,
+    ) -> CameraAnimationTrack:
+        with self._lock:
+            track = self._camera_animations.get(camera_id)
+            if track is None:
+                raise KeyError(camera_id)
+            if track.mode != "orbit":
+                raise ValueError("Only orbit animation keys are editable")
+
+            src_i = int(source_frame)
+            dst_i = int(target_frame)
+            if dst_i < int(track.start_frame) or dst_i > int(track.end_frame):
+                raise ValueError("target_frame is outside animation range")
+
+            by_frame: dict[int, CameraControlKey] = {int(k.frame): k for k in track.control_keys}
+            src = by_frame.get(src_i)
+            if src is None:
+                raise ValueError("source_frame does not contain a control key")
+
+            by_frame[dst_i] = CameraControlKey(frame=dst_i, position_local=src.position_local)
+            keys = tuple(sorted(by_frame.values(), key=lambda k: int(k.frame)))
+            if len(keys) < 2:
+                raise ValueError("orbit animation requires at least 2 control keys")
+
+            updated = bump_track_revision(replace(track, control_keys=keys))
+            baked = self._bake_camera_track_locked(updated)
+            self._camera_animations[camera_id] = baked
+            self._global_revision += 1
+            return baked
+
+    def smooth_camera_animation_keys(
+        self,
+        camera_id: str,
+        *,
+        start_frame: int | None = None,
+        end_frame: int | None = None,
+        passes: int = 1,
+        pinned_ends: bool = True,
+    ) -> CameraAnimationTrack:
+        with self._lock:
+            track = self._camera_animations.get(camera_id)
+            if track is None:
+                raise KeyError(camera_id)
+            if track.mode != "orbit":
+                raise ValueError("Only orbit animation keys are editable")
+
+            keys = list(sorted(track.control_keys, key=lambda k: int(k.frame)))
+            if len(keys) < 3:
+                raise ValueError("Need at least 3 control keys to smooth")
+
+            start_i = int(track.start_frame) if start_frame is None else int(start_frame)
+            end_i = int(track.end_frame) if end_frame is None else int(end_frame)
+            if end_i < start_i:
+                raise ValueError("end_frame must be >= start_frame")
+            if start_i < int(track.start_frame) or end_i > int(track.end_frame):
+                raise ValueError("smoothing range must lie within animation range")
+
+            passes_i = int(passes)
+            if passes_i <= 0:
+                raise ValueError("passes must be a positive integer")
+
+            work = [np.asarray(k.position_local, dtype=np.float64).reshape(3) for k in keys]
+            frames = [int(k.frame) for k in keys]
+
+            for _ in range(passes_i):
+                next_work = [p.copy() for p in work]
+                for idx in range(1, len(work) - 1):
+                    frame_i = frames[idx]
+                    if frame_i < start_i or frame_i > end_i:
+                        continue
+                    if bool(pinned_ends) and frame_i in (int(track.start_frame), int(track.end_frame)):
+                        continue
+                    prev_p = work[idx - 1]
+                    cur_p = work[idx]
+                    next_p = work[idx + 1]
+                    next_work[idx] = 0.5 * cur_p + 0.25 * prev_p + 0.25 * next_p
+                work = next_work
+
+            smoothed_keys = tuple(
+                CameraControlKey(
+                    frame=frames[idx],
+                    position_local=(float(work[idx][0]), float(work[idx][1]), float(work[idx][2])),
+                )
+                for idx in range(len(work))
+            )
+
+            updated = bump_track_revision(replace(track, control_keys=smoothed_keys))
+            baked = self._bake_camera_track_locked(updated)
+            self._camera_animations[camera_id] = baked
+            self._global_revision += 1
+            return baked
+
+    def get_camera_frame_samples(
+        self,
+        camera_id: str,
+        *,
+        start_frame: int | None = None,
+        end_frame: int | None = None,
+        stride: int = 1,
+    ) -> tuple[list[int], list[tuple[float, float, float]]]:
+        with self._lock:
+            track = self._camera_animations.get(camera_id)
+            if track is None:
+                raise KeyError(camera_id)
+
+            start = int(start_frame) if start_frame is not None else int(track.start_frame)
+            end = int(end_frame) if end_frame is not None else int(track.end_frame)
+            if end < start:
+                raise ValueError("end_frame must be >= start_frame")
+            stride_i = max(1, int(stride))
+
+            frames: list[int] = []
+            positions: list[tuple[float, float, float]] = []
+            for frame in range(start, end + 1, stride_i):
+                elem = self._sample_element_locked(camera_id, frame=frame, timestamp=None)
+                if not isinstance(elem, CameraElement):
+                    continue
+                frames.append(int(frame))
+                positions.append((float(elem.position[0]), float(elem.position[1]), float(elem.position[2])))
+            return frames, positions
 
     def timeline_info(self) -> dict[str, object]:
         with self._lock:
@@ -219,6 +769,8 @@ class InMemoryRegistry:
                     deleted=False,
                 )
                 # update_element_meta stores the sample.
+            self._camera_animations.clear()
+            self._global_revision += 1
 
     def delete_element(
         self,
@@ -234,13 +786,16 @@ class InMemoryRegistry:
                 raise KeyError(element_id)
             if getattr(prev, "deleted", False) and frame is None and timestamp is None and not static:
                 return prev
-            return self.update_element_meta(
+            updated = self.update_element_meta(
                 element_id,
                 deleted=True,
                 static=static,
                 frame=frame,
                 timestamp=timestamp,
             )
+            if isinstance(prev, CameraElement):
+                self._camera_animations.pop(element_id, None)
+            return updated
 
     def update_element_meta(
         self,
@@ -251,6 +806,9 @@ class InMemoryRegistry:
         visible: bool | None = None,
         deleted: bool | None = None,
         point_size: float | None = None,
+        size: tuple[float, float, float] | list[float] | np.ndarray | None = None,
+        radii: tuple[float, float, float] | list[float] | np.ndarray | None = None,
+        color: tuple[float, float, float] | list[float] | np.ndarray | None = None,
         fov: float | None = None,
         near: float | None = None,
         far: float | None = None,
@@ -350,6 +908,28 @@ class InMemoryRegistry:
                     if k != prev.intrinsic_matrix:
                         updates["intrinsic_matrix"] = k
                         data_changed = True
+            elif isinstance(prev, Box3DElement):
+                if size is not None:
+                    size_v = self._normalize_positive_vec3(size, name="size")
+                    if size_v != prev.size:
+                        updates["size"] = size_v
+                        state_changed = True
+                if color is not None:
+                    color_v = self._normalize_color3(color, name="color")
+                    if color_v != prev.color:
+                        updates["color"] = color_v
+                        state_changed = True
+            elif isinstance(prev, Ellipsoid3DElement):
+                if radii is not None:
+                    radii_v = self._normalize_positive_vec3(radii, name="radii")
+                    if radii_v != prev.radii:
+                        updates["radii"] = radii_v
+                        state_changed = True
+                if color is not None:
+                    color_v = self._normalize_color3(color, name="color")
+                    if color_v != prev.color:
+                        updates["color"] = color_v
+                        state_changed = True
             elif isinstance(prev, ImageElement):
                 # No image-specific mutable fields yet (payload upserts replace the element).
                 pass
@@ -678,6 +1258,140 @@ class InMemoryRegistry:
             self._global_revision += 1
             self._store_sample_locked(element_id, target, cam)
             return cam
+
+    def upsert_box3d(
+        self,
+        *,
+        name: str,
+        size: tuple[float, float, float] | list[float] | np.ndarray = (1.0, 1.0, 1.0),
+        color: tuple[float, float, float] | list[float] | np.ndarray = (0.62, 0.8, 1.0),
+        position: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        rotation: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
+        element_id: str | None = None,
+        static: bool = False,
+        frame: int | None = None,
+        timestamp: float | None = None,
+    ) -> Box3DElement:
+        size_v = self._normalize_positive_vec3(size, name="size")
+        color_v = self._normalize_color3(color, name="color")
+
+        with self._lock:
+            if element_id is None:
+                element_id = uuid.uuid4().hex
+
+            target = self._resolve_write_target_locked(static=static, frame=frame, timestamp=timestamp)
+            latest = self._elements.get(element_id)
+            base = self._base_element_for_write_locked(element_id, target)
+            base_box = base if isinstance(base, Box3DElement) else None
+            latest_box = latest if isinstance(latest, Box3DElement) else None
+            inherit_latest = target.axis is None or target.auto
+            latest_box_for_defaults = latest_box if inherit_latest else None
+
+            state_changed = (
+                latest_box is None
+                or size_v != latest_box.size
+                or color_v != latest_box.color
+                or tuple(float(x) for x in position) != latest_box.position
+                or tuple(float(x) for x in rotation) != latest_box.rotation
+            )
+            revision, state_revision, data_revision = self._next_revisions(
+                latest,
+                state_changed=state_changed,
+                data_changed=False,
+            )
+            now = time.time()
+
+            box = Box3DElement(
+                id=element_id,
+                type="box3d",
+                name=name,
+                size=size_v,
+                color=color_v,
+                revision=revision,
+                state_revision=state_revision,
+                data_revision=data_revision,
+                created_at=(latest.created_at if latest is not None else now),
+                updated_at=now,
+                position=(float(position[0]), float(position[1]), float(position[2])),
+                rotation=(float(rotation[0]), float(rotation[1]), float(rotation[2]), float(rotation[3])),
+                visible=(base_box.visible if base_box is not None else (latest_box_for_defaults.visible if latest_box_for_defaults is not None else True)),
+                deleted=(base_box.deleted if base_box is not None else (latest_box_for_defaults.deleted if latest_box_for_defaults is not None else False)),
+            )
+
+            self._global_revision += 1
+            self._store_sample_locked(element_id, target, box)
+            return box
+
+    def upsert_ellipsoid3d(
+        self,
+        *,
+        name: str,
+        radii: tuple[float, float, float] | list[float] | np.ndarray = (0.5, 0.5, 0.5),
+        color: tuple[float, float, float] | list[float] | np.ndarray = (0.56, 0.8, 0.62),
+        position: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        rotation: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
+        element_id: str | None = None,
+        static: bool = False,
+        frame: int | None = None,
+        timestamp: float | None = None,
+    ) -> Ellipsoid3DElement:
+        radii_v = self._normalize_positive_vec3(radii, name="radii")
+        color_v = self._normalize_color3(color, name="color")
+
+        with self._lock:
+            if element_id is None:
+                element_id = uuid.uuid4().hex
+
+            target = self._resolve_write_target_locked(static=static, frame=frame, timestamp=timestamp)
+            latest = self._elements.get(element_id)
+            base = self._base_element_for_write_locked(element_id, target)
+            base_ellipsoid = base if isinstance(base, Ellipsoid3DElement) else None
+            latest_ellipsoid = latest if isinstance(latest, Ellipsoid3DElement) else None
+            inherit_latest = target.axis is None or target.auto
+            latest_ellipsoid_for_defaults = latest_ellipsoid if inherit_latest else None
+
+            state_changed = (
+                latest_ellipsoid is None
+                or radii_v != latest_ellipsoid.radii
+                or color_v != latest_ellipsoid.color
+                or tuple(float(x) for x in position) != latest_ellipsoid.position
+                or tuple(float(x) for x in rotation) != latest_ellipsoid.rotation
+            )
+            revision, state_revision, data_revision = self._next_revisions(
+                latest,
+                state_changed=state_changed,
+                data_changed=False,
+            )
+            now = time.time()
+
+            ellipsoid = Ellipsoid3DElement(
+                id=element_id,
+                type="ellipsoid3d",
+                name=name,
+                radii=radii_v,
+                color=color_v,
+                revision=revision,
+                state_revision=state_revision,
+                data_revision=data_revision,
+                created_at=(latest.created_at if latest is not None else now),
+                updated_at=now,
+                position=(float(position[0]), float(position[1]), float(position[2])),
+                rotation=(float(rotation[0]), float(rotation[1]), float(rotation[2]), float(rotation[3])),
+                visible=(
+                    base_ellipsoid.visible
+                    if base_ellipsoid is not None
+                    else (latest_ellipsoid_for_defaults.visible if latest_ellipsoid_for_defaults is not None else True)
+                ),
+                deleted=(
+                    base_ellipsoid.deleted
+                    if base_ellipsoid is not None
+                    else (latest_ellipsoid_for_defaults.deleted if latest_ellipsoid_for_defaults is not None else False)
+                ),
+            )
+
+            self._global_revision += 1
+            self._store_sample_locked(element_id, target, ellipsoid)
+            return ellipsoid
 
     def upsert_image(
         self,

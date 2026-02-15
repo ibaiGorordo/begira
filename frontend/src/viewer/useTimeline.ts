@@ -16,6 +16,7 @@ export function useTimeline({ enabled = true }: { enabled?: boolean } = {}) {
   const [info, setInfo] = useState<TimelineInfo | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
   const [isScrubbing, setIsScrubbing] = useState(false)
+  const [loopPlayback, setLoopPlayback] = useState(false)
   const [playbackFps, setPlaybackFpsRaw] = useState(24)
   const initialized = useRef(false)
   const axisRef = useRef<TimelineAxis>('frame')
@@ -132,18 +133,22 @@ export function useTimeline({ enabled = true }: { enabled?: boolean } = {}) {
         const next = prev + delta
         if (next >= bounds.max) {
           reachedEnd = true
+          if (loopPlayback) {
+            valueRef.current = bounds.min
+            return bounds.min
+          }
           valueRef.current = bounds.max
           return bounds.max
         }
         valueRef.current = next
         return next
       })
-      if (reachedEnd) {
+      if (reachedEnd && !loopPlayback) {
         setIsPlaying(false)
       }
     }, intervalMs)
     return () => window.clearInterval(id)
-  }, [axis, bounds, enabled, isPlaying, isScrubbing, playbackFps])
+  }, [axis, bounds, enabled, isPlaying, isScrubbing, playbackFps, loopPlayback])
 
   useEffect(() => {
     if (enabled) return
@@ -218,7 +223,7 @@ export function useTimeline({ enabled = true }: { enabled?: boolean } = {}) {
     setIsPlaying((prev) => {
       if (prev) return false
       setValueRaw((current) => {
-        if (current >= bounds.max - 1e-9) {
+        if (current >= bounds.max - 1e-9 && loopPlayback) {
           valueRef.current = bounds.min
           return bounds.min
         }
@@ -227,7 +232,7 @@ export function useTimeline({ enabled = true }: { enabled?: boolean } = {}) {
       })
       return true
     })
-  }, [bounds])
+  }, [bounds, loopPlayback])
 
   const reinitialize = useCallback(() => {
     initialized.current = false
@@ -241,12 +246,14 @@ export function useTimeline({ enabled = true }: { enabled?: boolean } = {}) {
     info,
     isPlaying,
     isScrubbing,
+    loopPlayback,
     playbackFps,
     sampleQuery,
     sampleKey,
     setAxis,
     setValue,
     setIsPlaying,
+    setLoopPlayback,
     togglePlay,
     beginScrub,
     endScrub,

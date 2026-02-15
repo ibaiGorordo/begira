@@ -1,10 +1,10 @@
 import time
 from pathlib import Path
 
-import numpy as np
-import cv2
 import begira
+import numpy as np
 from begira.ply import load_ply_gaussians
+
 
 def main() -> None:
     client = begira.run(port=57793)
@@ -14,30 +14,13 @@ def main() -> None:
     assets_dir = Path(__file__).resolve().parent / "assets"
     gs = load_ply_gaussians(str(assets_dir / "gaussians.ply"))
     gs_obj = client.log_gaussians("gaussians", gs)
-    points_obj = client.log_points(
-        "points",
-        gs.positions * np.array([1, -1, 1]) + np.array([0, -5, 0]),
-        gs.colors_rgb8,
-        point_size=0.025,
-    )
-    img = cv2.imread(str(assets_dir / "tokyo.jpg"))
-    img_obj = client.log_image("image", img)
 
     main_camera = client.log_camera(
         "main_camera",
         fov=60.0,
     )
-    main_camera.look_at(gs_obj, 6.0)
 
-    # Temporal camera path: move farther away over frames while continuously
-    # looking at the gaussian object.
-    num_frames = 180
-    start_distance = 6.0
-    end_distance = 22.0
-    for frame in range(num_frames):
-        t = frame / float(max(1, num_frames - 1))
-        distance = (1.0 - t) * start_distance + t * end_distance
-        main_camera.look_at(gs_obj, distance=distance, frame=frame)
+    main_camera.open_view()
 
     try:
         while True:

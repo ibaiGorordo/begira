@@ -11,9 +11,10 @@ ElementType = Literal[
     "gaussians",
     "camera",
     "image",
+    "box3d",
+    "ellipsoid3d",
     # Future:
     # "lines3d",
-    # "boxes3d",
 ]
 
 
@@ -87,3 +88,17 @@ class ImageElement(ElementBase):
     width: int
     height: int
     channels: int
+
+
+@dataclass(frozen=True)
+class Box3DElement(ElementBase):
+    type: Literal["box3d"]
+    size: tuple[float, float, float]
+    color: tuple[float, float, float]
+
+
+@dataclass(frozen=True)
+class Ellipsoid3DElement(ElementBase):
+    type: Literal["ellipsoid3d"]
+    radii: tuple[float, float, float]
+    color: tuple[float, float, float]

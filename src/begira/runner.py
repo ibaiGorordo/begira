@@ -12,13 +12,15 @@ from datetime import datetime
 import numpy as np
 import uvicorn
 
+from .animation import CameraAnimationTrack, camera_animation_track_to_dict
 from .client import BegiraClient, to_unix_seconds
 from .conventions import CoordinateConvention
 from .element_projection import element_to_meta_item
-from .handles import CameraHandle, GaussianHandle, ImageHandle, PointCloudHandle
+from .handles import CameraHandle, GaussianHandle, ImageHandle, PointCloudHandle, Box3DHandle, Ellipsoid3DHandle
 from .image_logging import encode_image_payload
 from .registry import REGISTRY
 from .server import create_app
+from .viewer_settings import VIEWER_SETTINGS
 
 
 @dataclass(frozen=True)
@@ -127,6 +129,230 @@ class BegiraServer:
             )
         except KeyError as e:
             raise RuntimeError(f"Unknown element: {element_id}") from e
+
+    @staticmethod
+    def _default_animation_up() -> tuple[float, float, float]:
+        settings = VIEWER_SETTINGS.get()
+        if settings.coordinate_convention == "rh-y-up":
+            return (0.0, 1.0, 0.0)
+        return (0.0, 0.0, 1.0)
+
+    def get_camera_animation(
+        self,
+        camera_id: str,
+        *,
+        timeout_s: float = 10.0,
+    ) -> dict | None:
+        _ = timeout_s
+        track = REGISTRY.get_camera_animation(camera_id)
+        if track is None:
+            return None
+        return camera_animation_track_to_dict(track)
+
+    def set_camera_animation(
+        self,
+        camera_id: str,
+        *,
+        mode: str,
+        target_id: str,
+        start_frame: int,
+        end_frame: int,
+        step: int = 1,
+        turns: float | None = None,
+        radius: float | None = None,
+        phase_deg: float | None = None,
+        up: tuple[float, float, float] | list[float] | np.ndarray | None = None,
+        timeout_s: float = 10.0,
+    ) -> dict:
+        _ = timeout_s
+        mode_v = str(mode).strip().lower()
+        up_v: tuple[float, float, float]
+        if up is None:
+            up_v = self._default_animation_up()
+        else:
+            arr = np.asarray(up, dtype=np.float64).reshape(3)
+            up_v = (float(arr[0]), float(arr[1]), float(arr[2]))
+
+        params: dict[str, float] = {}
+        if mode_v == "orbit":
+            params["turns"] = float(1.0 if turns is None else turns)
+            if radius is not None:
+                params["radius"] = float(radius)
+            params["phaseDeg"] = float(0.0 if phase_deg is None else phase_deg)
+
+        track = CameraAnimationTrack(
+            camera_id=str(camera_id),
+            mode=mode_v,  # type: ignore[arg-type]
+            target_id=str(target_id),
+            start_frame=int(start_frame),
+            end_frame=int(end_frame),
+            step=int(step),
+            interpolation="catmull_rom",
+            up=up_v,
+            params=params,
+            control_keys=tuple(),
+        )
+        try:
+            out = REGISTRY.set_camera_animation(track)
+        except KeyError as e:
+            raise RuntimeError(f"Unknown element: {str(e)}") from e
+        except ValueError as e:
+            raise RuntimeError(str(e)) from e
+        return camera_animation_track_to_dict(out)
+
+    def update_camera_animation_key(
+        self,
+        camera_id: str,
+        *,
+        frame: int,
+        position: tuple[float, float, float] | list[float] | np.ndarray,
+        pull_enabled: bool = False,
+        pull_radius_frames: int = 0,
+        pull_pinned_ends: bool = False,
+        timeout_s: float = 10.0,
+    ) -> dict:
+        _ = timeout_s
+        pos = np.asarray(position, dtype=np.float64).reshape(3)
+        try:
+            out = REGISTRY.update_camera_animation_key(
+                camera_id,
+                frame=int(frame),
+                new_world_position=(float(pos[0]), float(pos[1]), float(pos[2])),
+                pull_enabled=bool(pull_enabled),
+                pull_radius_frames=int(pull_radius_frames),
+                pull_pinned_ends=bool(pull_pinned_ends),
+            )
+        except KeyError as e:
+            raise RuntimeError(f"Unknown element: {str(e)}") from e
+        except ValueError as e:
+            raise RuntimeError(str(e)) from e
+        return camera_animation_track_to_dict(out)
+
+    def insert_camera_animation_key(
+        self,
+        camera_id: str,
+        *,
+        frame: int,
+        position: tuple[float, float, float] | list[float] | np.ndarray | None = None,
+        timeout_s: float = 10.0,
+    ) -> dict:
+        _ = timeout_s
+        pos: tuple[float, float, float] | None = None
+        if position is not None:
+            arr = np.asarray(position, dtype=np.float64).reshape(3)
+            pos = (float(arr[0]), float(arr[1]), float(arr[2]))
+        try:
+            out = REGISTRY.insert_camera_animation_key(camera_id, frame=int(frame), world_position=pos)
+        except KeyError as e:
+            raise RuntimeError(f"Unknown element: {str(e)}") from e
+        except ValueError as e:
+            raise RuntimeError(str(e)) from e
+        return camera_animation_track_to_dict(out)
+
+    def delete_camera_animation_key(
+        self,
+        camera_id: str,
+        *,
+        frame: int,
+        timeout_s: float = 10.0,
+    ) -> dict:
+        _ = timeout_s
+        try:
+            out = REGISTRY.delete_camera_animation_key(camera_id, frame=int(frame))
+        except KeyError as e:
+            raise RuntimeError(f"Unknown element: {str(e)}") from e
+        except ValueError as e:
+            raise RuntimeError(str(e)) from e
+        return camera_animation_track_to_dict(out)
+
+    def duplicate_camera_animation_key(
+        self,
+        camera_id: str,
+        *,
+        source_frame: int,
+        target_frame: int,
+        timeout_s: float = 10.0,
+    ) -> dict:
+        _ = timeout_s
+        try:
+            out = REGISTRY.duplicate_camera_animation_key(
+                camera_id,
+                source_frame=int(source_frame),
+                target_frame=int(target_frame),
+            )
+        except KeyError as e:
+            raise RuntimeError(f"Unknown element: {str(e)}") from e
+        except ValueError as e:
+            raise RuntimeError(str(e)) from e
+        return camera_animation_track_to_dict(out)
+
+    def smooth_camera_animation(
+        self,
+        camera_id: str,
+        *,
+        start_frame: int | None = None,
+        end_frame: int | None = None,
+        passes: int = 1,
+        pinned_ends: bool = True,
+        timeout_s: float = 10.0,
+    ) -> dict:
+        _ = timeout_s
+        try:
+            out = REGISTRY.smooth_camera_animation_keys(
+                camera_id,
+                start_frame=int(start_frame) if start_frame is not None else None,
+                end_frame=int(end_frame) if end_frame is not None else None,
+                passes=int(passes),
+                pinned_ends=bool(pinned_ends),
+            )
+        except KeyError as e:
+            raise RuntimeError(f"Unknown element: {str(e)}") from e
+        except ValueError as e:
+            raise RuntimeError(str(e)) from e
+        return camera_animation_track_to_dict(out)
+
+    def clear_camera_animation(
+        self,
+        camera_id: str,
+        *,
+        timeout_s: float = 10.0,
+    ) -> None:
+        _ = timeout_s
+        REGISTRY.clear_camera_animation(camera_id)
+
+    def get_camera_animation_trajectory(
+        self,
+        camera_id: str,
+        *,
+        start_frame: int | None = None,
+        end_frame: int | None = None,
+        stride: int = 1,
+        timeout_s: float = 10.0,
+    ) -> dict:
+        _ = timeout_s
+        try:
+            frames, positions = REGISTRY.get_camera_frame_samples(
+                camera_id,
+                start_frame=start_frame,
+                end_frame=end_frame,
+                stride=stride,
+            )
+        except KeyError as e:
+            raise RuntimeError(f"Unknown element: {str(e)}") from e
+        except ValueError as e:
+            raise RuntimeError(str(e)) from e
+
+        if not frames:
+            raise RuntimeError("No trajectory samples available")
+
+        return {
+            "cameraId": str(camera_id),
+            "startFrame": int(frames[0]),
+            "endFrame": int(frames[-1]),
+            "stride": int(max(1, int(stride))),
+            "frames": [int(f) for f in frames],
+            "positions": [[float(p[0]), float(p[1]), float(p[2])] for p in positions],
+        }
 
     def log_points(
         self,
@@ -267,6 +493,58 @@ class BegiraServer:
         )
         return CameraHandle(cam.id, ops=self, element_type="camera")
 
+    def log_box3d(
+        self,
+        name: str,
+        *,
+        size: tuple[float, float, float] | list[float] | np.ndarray = (1.0, 1.0, 1.0),
+        color: tuple[float, float, float] | list[float] | np.ndarray = (0.62, 0.8, 1.0),
+        position: tuple[float, float, float] | list[float] = (0.0, 0.0, 0.0),
+        rotation: tuple[float, float, float, float] | list[float] = (0.0, 0.0, 0.0, 1.0),
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        static: bool = False,
+        element_id: str | None = None,
+    ) -> Box3DHandle:
+        box = REGISTRY.upsert_box3d(
+            name=name,
+            size=size,  # type: ignore[arg-type]
+            color=color,  # type: ignore[arg-type]
+            position=(float(position[0]), float(position[1]), float(position[2])),
+            rotation=(float(rotation[0]), float(rotation[1]), float(rotation[2]), float(rotation[3])),
+            element_id=element_id,
+            frame=int(frame) if frame is not None else None,
+            timestamp=to_unix_seconds(timestamp),
+            static=bool(static),
+        )
+        return Box3DHandle(box.id, ops=self, element_type="box3d")
+
+    def log_ellipsoid3d(
+        self,
+        name: str,
+        *,
+        radii: tuple[float, float, float] | list[float] | np.ndarray = (0.5, 0.5, 0.5),
+        color: tuple[float, float, float] | list[float] | np.ndarray = (0.56, 0.8, 0.62),
+        position: tuple[float, float, float] | list[float] = (0.0, 0.0, 0.0),
+        rotation: tuple[float, float, float, float] | list[float] = (0.0, 0.0, 0.0, 1.0),
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        static: bool = False,
+        element_id: str | None = None,
+    ) -> Ellipsoid3DHandle:
+        ellipsoid = REGISTRY.upsert_ellipsoid3d(
+            name=name,
+            radii=radii,  # type: ignore[arg-type]
+            color=color,  # type: ignore[arg-type]
+            position=(float(position[0]), float(position[1]), float(position[2])),
+            rotation=(float(rotation[0]), float(rotation[1]), float(rotation[2]), float(rotation[3])),
+            element_id=element_id,
+            frame=int(frame) if frame is not None else None,
+            timestamp=to_unix_seconds(timestamp),
+            static=bool(static),
+        )
+        return Ellipsoid3DHandle(ellipsoid.id, ops=self, element_type="ellipsoid3d")
+
     def log_image(
         self,
         name: str,
@@ -347,6 +625,19 @@ class BegiraServer:
     def get_viewer_settings(self, *, timeout_s: float = 10.0) -> dict:
         """Return the active viewer settings for this server."""
         return self._as_client().get_viewer_settings(timeout_s=timeout_s)
+
+    def open_camera_view(self, camera_id: str, *, timeout_s: float = 10.0) -> None:
+        """Request all connected viewers to open a linked view for a camera."""
+        _ = timeout_s
+        cid = str(camera_id).strip()
+        if not cid:
+            raise ValueError("camera_id cannot be empty")
+        elem = REGISTRY.get_element(cid)
+        if elem is None:
+            raise RuntimeError(f"Unknown element: {cid}")
+        if getattr(elem, "type", None) != "camera":
+            raise RuntimeError("open_camera_view requires a camera element id")
+        VIEWER_SETTINGS.request_open_camera_view(cid)
 
     def get_timeline_info(self, *, timeout_s: float = 10.0) -> dict[str, object]:
         """Return timeline axis ranges and latest cursor positions."""

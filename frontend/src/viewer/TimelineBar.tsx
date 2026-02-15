@@ -11,9 +11,11 @@ export default function TimelineBar({
   value,
   bounds,
   isPlaying,
+  loopPlayback,
   playbackFps,
   onAxisChange,
   onValueChange,
+  onToggleLoop,
   onTogglePlay,
   onScrubStart,
   onScrubEnd,
@@ -24,9 +26,11 @@ export default function TimelineBar({
   value: number
   bounds: TimelineBounds | null
   isPlaying: boolean
+  loopPlayback: boolean
   playbackFps: number
   onAxisChange: (axis: TimelineAxis) => void
   onValueChange: (value: number) => void
+  onToggleLoop: (loop: boolean) => void
   onTogglePlay: () => void
   onScrubStart: () => void
   onScrubEnd: () => void
@@ -51,14 +55,14 @@ export default function TimelineBar({
       </div>
 
       <div className="timeline-center">
-        <button className="timeline-btn" onClick={() => onStep(-1)} disabled={!hasData} title="Step back">
-          ◀
+        <button className="timeline-btn" onClick={() => onStep(-1)} disabled={!hasData} title="Step back (Left Arrow)">
+          ◀◀
         </button>
-        <button className="timeline-btn" onClick={onTogglePlay} disabled={!hasData} title={isPlaying ? 'Pause' : 'Play'}>
-          {isPlaying ? 'Pause' : 'Play'}
+        <button className="timeline-btn" onClick={onTogglePlay} disabled={!hasData} title={isPlaying ? 'Pause (Space)' : 'Play (Space)'}>
+          {isPlaying ? '⏸' : '▶'}
         </button>
-        <button className="timeline-btn" onClick={() => onStep(1)} disabled={!hasData} title="Step forward">
-          ▶
+        <button className="timeline-btn" onClick={() => onStep(1)} disabled={!hasData} title="Step forward (Right Arrow)">
+          ▶▶
         </button>
 
         <input
@@ -90,6 +94,14 @@ export default function TimelineBar({
       </div>
 
       <div className="timeline-right">
+        <label className="timeline-loop">
+          <input
+            type="checkbox"
+            checked={loopPlayback}
+            onChange={(e) => onToggleLoop(e.target.checked)}
+          />
+          Loop
+        </label>
         <label className="timeline-label">FPS</label>
         <input
           className="timeline-input"

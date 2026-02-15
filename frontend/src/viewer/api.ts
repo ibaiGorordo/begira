@@ -1,4 +1,4 @@
-export type ElementType = 'pointcloud' | 'gaussians' | 'camera' | 'image'
+export type ElementType = 'pointcloud' | 'gaussians' | 'camera' | 'image' | 'box3d' | 'ellipsoid3d'
 export type TimelineAxis = 'frame' | 'timestamp'
 
 export type SampleQuery = {
@@ -55,6 +55,10 @@ export type ElementInfo = {
   far?: number
   position?: [number, number, number]
   rotation?: [number, number, number, number]
+  // Primitive-only fields.
+  size?: [number, number, number]
+  radii?: [number, number, number]
+  color?: [number, number, number]
 }
 
 export type PointCloudElementMeta = {
@@ -139,10 +143,89 @@ export type ImageElementMeta = {
 
 export type Events = {
   globalRevision: number
+  viewerCommands?: {
+    openCameraView?: {
+      seq: number
+      cameraId: string
+    } | null
+  }
 }
 
 export type ViewerSettings = {
   coordinateConvention?: string
+}
+
+export type CameraAnimationMode = 'follow' | 'orbit'
+export type CameraInterpolation = 'catmull_rom'
+
+export type CameraControlKey = {
+  frame: number
+  positionLocal: [number, number, number]
+}
+
+export type CameraAnimationTrack = {
+  cameraId: string
+  mode: CameraAnimationMode
+  targetId: string
+  startFrame: number
+  endFrame: number
+  step: number
+  interpolation: CameraInterpolation
+  up: [number, number, number]
+  params: Record<string, number>
+  controlKeys: CameraControlKey[]
+  revision: number
+  updatedAt: number
+}
+
+export type CameraAnimationTrajectory = {
+  cameraId: string
+  startFrame: number
+  endFrame: number
+  stride: number
+  frames: number[]
+  positions: Array<[number, number, number]>
+}
+
+export type PutCameraAnimationRequest = {
+  mode: CameraAnimationMode
+  targetId: string
+  startFrame: number
+  endFrame: number
+  step?: number
+  turns?: number
+  radius?: number
+  phaseDeg?: number
+  up?: [number, number, number]
+  controlKeys?: Array<{
+    frame: number
+    positionLocal: [number, number, number]
+  }>
+}
+
+export type PatchCameraAnimationKeyRequest = {
+  frame: number
+  position: [number, number, number]
+  pullEnabled?: boolean
+  pullRadiusFrames?: number
+  pullPinnedEnds?: boolean
+}
+
+export type InsertCameraAnimationKeyRequest = {
+  frame: number
+  position?: [number, number, number]
+}
+
+export type DuplicateCameraAnimationKeyRequest = {
+  sourceFrame: number
+  targetFrame: number
+}
+
+export type SmoothCameraAnimationRequest = {
+  startFrame?: number
+  endFrame?: number
+  passes?: number
+  pinnedEnds?: boolean
 }
 
 export type UpdatePointCloudSettingsRequest = {
@@ -153,6 +236,9 @@ export type UpdateElementMetaRequest = {
   pointSize?: number
   position?: [number, number, number]
   rotation?: [number, number, number, number]
+  size?: [number, number, number]
+  radii?: [number, number, number]
+  color?: [number, number, number]
   visible?: boolean
   deleted?: boolean
   fov?: number
@@ -274,4 +360,94 @@ export async function fetchViewerSettings(): Promise<ViewerSettings> {
   const res = await fetch('/api/viewer/settings')
   if (!res.ok) throw new Error(`Failed to get viewer settings: ${res.status} ${res.statusText}`)
   return (await res.json()) as ViewerSettings
+}
+
+export async function fetchCameraAnimation(elementId: string): Promise<CameraAnimationTrack | null> {
+  const res = await fetch(`/api/elements/${encodeURIComponent(elementId)}/animation`)
+  if (res.status === 404) return null
+  if (!res.ok) throw new Error(`Failed to get camera animation: ${res.status} ${res.statusText}`)
+  return (await res.json()) as CameraAnimationTrack
+}
+
+export async function putCameraAnimation(elementId: string, req: PutCameraAnimationRequest): Promise<CameraAnimationTrack> {
+  const res = await fetch(`/api/elements/${encodeURIComponent(elementId)}/animation`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!res.ok) throw new Error(`Failed to set camera animation: ${res.status} ${res.statusText}`)
+  return (await res.json()) as CameraAnimationTrack
+}
+
+export async function patchCameraAnimationKey(elementId: string, req: PatchCameraAnimationKeyRequest): Promise<CameraAnimationTrack> {
+  const res = await fetch(`/api/elements/${encodeURIComponent(elementId)}/animation/key`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!res.ok) throw new Error(`Failed to update camera animation key: ${res.status} ${res.statusText}`)
+  return (await res.json()) as CameraAnimationTrack
+}
+
+export async function insertCameraAnimationKey(elementId: string, req: InsertCameraAnimationKeyRequest): Promise<CameraAnimationTrack> {
+  const res = await fetch(`/api/elements/${encodeURIComponent(elementId)}/animation/key`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!res.ok) throw new Error(`Failed to insert camera animation key: ${res.status} ${res.statusText}`)
+  return (await res.json()) as CameraAnimationTrack
+}
+
+export async function deleteCameraAnimationKey(elementId: string, frame: number): Promise<CameraAnimationTrack> {
+  const qs = new URLSearchParams({ frame: String(Math.round(frame)) })
+  const res = await fetch(`/api/elements/${encodeURIComponent(elementId)}/animation/key?${qs.toString()}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) throw new Error(`Failed to delete camera animation key: ${res.status} ${res.statusText}`)
+  return (await res.json()) as CameraAnimationTrack
+}
+
+export async function duplicateCameraAnimationKey(elementId: string, req: DuplicateCameraAnimationKeyRequest): Promise<CameraAnimationTrack> {
+  const res = await fetch(`/api/elements/${encodeURIComponent(elementId)}/animation/key/duplicate`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!res.ok) throw new Error(`Failed to duplicate camera animation key: ${res.status} ${res.statusText}`)
+  return (await res.json()) as CameraAnimationTrack
+}
+
+export async function smoothCameraAnimation(elementId: string, req: SmoothCameraAnimationRequest = {}): Promise<CameraAnimationTrack> {
+  const res = await fetch(`/api/elements/${encodeURIComponent(elementId)}/animation/smooth`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!res.ok) throw new Error(`Failed to smooth camera animation: ${res.status} ${res.statusText}`)
+  return (await res.json()) as CameraAnimationTrack
+}
+
+export async function deleteCameraAnimation(elementId: string): Promise<void> {
+  const res = await fetch(`/api/elements/${encodeURIComponent(elementId)}/animation`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) throw new Error(`Failed to clear camera animation: ${res.status} ${res.statusText}`)
+}
+
+export async function fetchCameraAnimationTrajectory(
+  elementId: string,
+  opts?: { startFrame?: number; endFrame?: number; stride?: number }
+): Promise<CameraAnimationTrajectory> {
+  const params = new URLSearchParams()
+  if (opts?.startFrame !== undefined) params.set('startFrame', String(Math.round(opts.startFrame)))
+  if (opts?.endFrame !== undefined) params.set('endFrame', String(Math.round(opts.endFrame)))
+  if (opts?.stride !== undefined) params.set('stride', String(Math.max(1, Math.round(opts.stride))))
+  const suffix = params.size > 0 ? `?${params.toString()}` : ''
+  const res = await fetch(`/api/elements/${encodeURIComponent(elementId)}/animation/trajectory${suffix}`)
+  if (!res.ok) throw new Error(`Failed to get camera animation trajectory: ${res.status} ${res.statusText}`)
+  const data = (await res.json()) as CameraAnimationTrajectory
+  data.positions = (data.positions ?? []).map((p) => [Number(p[0]), Number(p[1]), Number(p[2])] as [number, number, number])
+  data.frames = (data.frames ?? []).map((f) => Number(f))
+  return data
 }

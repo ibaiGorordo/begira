@@ -191,6 +191,7 @@ select {
   height: 30px;
   font-size: 12px;
   font-weight: 600;
+  min-width: 34px;
 }
 
 .timeline-slider {
@@ -199,6 +200,16 @@ select {
 
 .timeline-input {
   width: 116px;
+}
+
+.timeline-loop {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+  user-select: none;
 }
 
 .side-panel {
@@ -375,6 +386,86 @@ select {
 .workspace-overlay button.active {
   background: var(--bg-selected);
   border-color: #9fbae8;
+}
+
+.animate-toolbar-wrap {
+  position: absolute;
+  top: 54px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.animate-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: rgba(248, 250, 253, 0.95);
+  box-shadow: var(--shadow-soft);
+  pointer-events: auto;
+}
+
+.animate-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.animate-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.animate-inline input {
+  width: 62px;
+  height: 28px;
+  padding: 4px 6px;
+}
+
+.animate-inline input[type="range"] {
+  width: 132px;
+  height: 22px;
+  padding: 0;
+}
+
+.animate-slider-value {
+  min-width: 32px;
+  text-align: right;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.animate-readout {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+  padding-left: 6px;
+  border-left: 1px solid var(--line);
+}
+
+.animate-toolbar-hint {
+  pointer-events: none;
+  font-size: 11px;
+  color: var(--muted);
+  background: rgba(248, 250, 253, 0.9);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 4px 8px;
 }
 
 .empty-pane {
