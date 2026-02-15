@@ -6,7 +6,6 @@ import WASDControls from './WASDControls'
 import MultiPointCloudScene, { PointCloudRenderMode } from './MultiPointCloudScene'
 import GaussianSplatScene from './GaussianSplatScene'
 import CameraScene, { CAMERA_GIZMO_OVERLAY_LAYER, type CameraVisual } from './CameraScene'
-import { useCamera } from './useCamera'
 import {
   createClickGesture,
   isClickGesture,
@@ -17,7 +16,8 @@ import {
 import { usePointCloud } from './usePointCloud'
 import DebugOverlay, { isDebugOverlayEnabledFromUrl } from './DebugOverlay'
 import { getCoordinateConvention, parseCoordinateConventionFromUrl, type CoordinateConventionId } from './coordinateConventions'
-import { fetchViewerSettings } from './api'
+import { fetchViewerSettings, type SampleQuery } from './api'
+import { usePageActivity } from './usePageActivity'
 
 type Bounds3 = { min: THREE.Vector3; max: THREE.Vector3 }
 
@@ -288,36 +288,34 @@ function OverlayCameraRenderPass() {
   return null
 }
 
-function PeekThroughCamera({
-  request,
+function FollowCameraDriver({
+  cameraMeta,
   enabled,
   worldToView,
 }: {
-  request: { camera: CameraVisual; token: number } | null
+  cameraMeta: CameraVisual | null
   enabled: boolean
   worldToView: THREE.Quaternion
 }) {
   const { camera } = useThree()
 
   useLayoutEffect(() => {
-    if (!enabled || !request) return
+    if (!enabled || !cameraMeta) return
 
     const cam = camera as THREE.PerspectiveCamera
-    const meta = request.camera
-
-    const posWorld = meta.position ?? [0, 0, 0]
-    const rotWorld = meta.rotation ?? [0, 0, 0, 1]
+    const posWorld = cameraMeta.position ?? [0, 0, 0]
+    const rotWorld = cameraMeta.rotation ?? [0, 0, 0, 1]
     const posView = new THREE.Vector3(posWorld[0], posWorld[1], posWorld[2]).applyQuaternion(worldToView)
     const qWorld = new THREE.Quaternion(rotWorld[0], rotWorld[1], rotWorld[2], rotWorld[3]).normalize()
     const qView = worldToView.clone().multiply(qWorld).normalize()
 
     cam.position.copy(posView)
     cam.quaternion.copy(qView)
-    if (Number.isFinite(meta.fov)) {
-      cam.fov = THREE.MathUtils.clamp(meta.fov as number, 5, 175)
+    if (Number.isFinite(cameraMeta.fov)) {
+      cam.fov = THREE.MathUtils.clamp(cameraMeta.fov as number, 5, 175)
     }
-    const near = Number.isFinite(meta.near) ? Math.max(0.0001, meta.near as number) : cam.near
-    const far = Number.isFinite(meta.far) ? Math.max(near + 0.01, meta.far as number) : cam.far
+    const near = Number.isFinite(cameraMeta.near) ? Math.max(0.0001, cameraMeta.near as number) : cam.near
+    const far = Number.isFinite(cameraMeta.far) ? Math.max(near + 0.01, cameraMeta.far as number) : cam.far
     cam.near = near
     cam.far = far
     cam.updateProjectionMatrix()
@@ -334,7 +332,29 @@ function PeekThroughCamera({
       ;(camera as any).userData = (camera as any).userData ?? {}
       ;(camera as any).userData.pendingOrbitTarget = target.clone()
     }
-  }, [camera, enabled, request, worldToView])
+  }, [camera, cameraMeta, enabled, worldToView])
+
+  useFrame(() => {
+    if (!enabled || !cameraMeta) return
+
+    const cam = camera as THREE.PerspectiveCamera
+    const posWorld = cameraMeta.position ?? [0, 0, 0]
+    const rotWorld = cameraMeta.rotation ?? [0, 0, 0, 1]
+    const posView = new THREE.Vector3(posWorld[0], posWorld[1], posWorld[2]).applyQuaternion(worldToView)
+    const qWorld = new THREE.Quaternion(rotWorld[0], rotWorld[1], rotWorld[2], rotWorld[3]).normalize()
+    const qView = worldToView.clone().multiply(qWorld).normalize()
+
+    cam.position.copy(posView)
+    cam.quaternion.copy(qView)
+    if (Number.isFinite(cameraMeta.fov)) {
+      cam.fov = THREE.MathUtils.clamp(cameraMeta.fov as number, 5, 175)
+    }
+    const near = Number.isFinite(cameraMeta.near) ? Math.max(0.0001, cameraMeta.near as number) : cam.near
+    const far = Number.isFinite(cameraMeta.far) ? Math.max(near + 0.01, cameraMeta.far as number) : cam.far
+    cam.near = near
+    cam.far = far
+    cam.updateProjectionMatrix()
+  })
 
   return null
 }
@@ -381,6 +401,8 @@ export default function PointCloudCanvas({
   cameraMetaBounds = [],
   activeCameraId,
   transformMode = 'translate',
+  sample,
+  secondaryView = false,
   onTransformCommit,
 }: {
   cloudIds: string[]
@@ -396,9 +418,12 @@ export default function PointCloudCanvas({
   cameraMetaBounds?: { min: [number, number, number]; max: [number, number, number] }[]
   activeCameraId?: string | null
   transformMode?: 'translate' | 'rotate'
+  sample?: SampleQuery
+  secondaryView?: boolean
   onTransformCommit?: (id: string, position: [number, number, number], rotation: [number, number, number, number]) => void
 }) {
   const background = useMemo(() => new THREE.Color('#0b1020'), [])
+  const pageActive = usePageActivity()
 
   const [conventionId, setConventionId] = useState<CoordinateConventionId>(() => {
     return parseCoordinateConventionFromUrl(window.location.search) ?? 'rh-z-up'
@@ -449,6 +474,7 @@ export default function PointCloudCanvas({
     if (v === 'fast' || v === 'circles' || v === 'quality') return v
     return 'circles'
   })
+  const effectiveRenderMode: PointCloudRenderMode = secondaryView ? 'fast' : renderMode
 
   const orbitRef = useRef<any>(null)
   const [controlsReady, setControlsReady] = useState(false)
@@ -473,7 +499,7 @@ export default function PointCloudCanvas({
       return t + 1
     })
   }, [])
-  const [peekRequest, setPeekRequest] = useState<{ camera: CameraVisual; token: number } | null>(null)
+  const [followCameraId, setFollowCameraId] = useState<string | null>(null)
 
   // IMPORTANT: refit whenever convention changes.
   useEffect(() => {
@@ -494,12 +520,25 @@ export default function PointCloudCanvas({
     for (const c of cameraVisuals) byId.set(c.id, c)
     return byId
   }, [cameraVisuals])
-  const triggerCameraPeek = useCallback((id: string, source?: string) => {
-    void source
-    const cam = cameraVisualById.get(id)
-    if (!cam) return
-    setPeekRequest({ camera: cam, token: performance.now() })
-  }, [cameraVisualById])
+  const followCameraMeta = followCameraId ? cameraVisualById.get(followCameraId) ?? null : null
+  const activeCameraMeta = useMemo(() => {
+    if (!activeCameraId) return null
+    const c = cameraVisualById.get(activeCameraId)
+    if (!c) return null
+    return {
+      position: c.position,
+      rotation: c.rotation,
+      fov: Number.isFinite(c.fov as number) ? (c.fov as number) : 60,
+      near: Number.isFinite(c.near as number) ? (c.near as number) : 0.01,
+      far: Number.isFinite(c.far as number) ? (c.far as number) : 1000,
+    }
+  }, [activeCameraId, cameraVisualById])
+
+  useEffect(() => {
+    if (!followCameraId) return
+    if (cameraVisualById.has(followCameraId)) return
+    setFollowCameraId(null)
+  }, [cameraVisualById, followCameraId])
 
   // Initialize focus when elements first appear.
   const prevElementCount = useRef(0)
@@ -540,7 +579,7 @@ export default function PointCloudCanvas({
     const focusedCamera = cameraVisualById.get(focusTarget)
     if (focusedCamera) {
       setFocusId(focusTarget)
-      triggerCameraPeek(focusTarget, 'effect:focusTarget-camera')
+      setFollowCameraId(focusTarget)
       onFocus(null)
       return
     }
@@ -551,11 +590,11 @@ export default function PointCloudCanvas({
 
     // Consume the request so it doesn't refire on every render/poll tick.
     onFocus(null)
-  }, [allElementIds, focusTarget, bumpFocus, cameraVisualById, triggerCameraPeek, onFocus])
+  }, [allElementIds, focusTarget, bumpFocus, cameraVisualById, onFocus])
 
   // First cloud decoded bounds:
   const firstCloudId = cloudIds[0] ?? ''
-  const firstCloudState = usePointCloud(firstCloudId)
+  const firstCloudState = usePointCloud(firstCloudId, sample, pageActive)
   const firstDecodedBounds = useMemo(() => {
     if (firstCloudState.status !== 'ready') return null
     return firstCloudState.decoded.bounds
@@ -627,9 +666,14 @@ export default function PointCloudCanvas({
     return objectMapRef.current.get(selectedId) ?? null
   }, [selectedId, objectsVersion])
 
-  const activeCameraState = useCamera(activeCameraId ?? '')
-  const activeCameraReady = !!activeCameraId && activeCameraState.status === 'ready'
-  const activeCameraMeta = activeCameraState.status === 'ready' ? activeCameraState.meta : null
+  const activeCameraReady = !!activeCameraMeta
+  const followCameraActive = !activeCameraReady && !!followCameraMeta
+  const hiddenCameraIds = useMemo(() => {
+    const ids = new Set<string>()
+    if (activeCameraId) ids.add(activeCameraId)
+    if (followCameraId) ids.add(followCameraId)
+    return ids
+  }, [activeCameraId, followCameraId])
 
   useEffect(() => {
     if (orbitRef.current) {
@@ -640,8 +684,10 @@ export default function PointCloudCanvas({
   return (
     <Canvas
       // Do NOT key the canvas by conventionId. That causes a full remount and camera reset.
+      frameloop={pageActive ? 'demand' : 'never'}
       camera={{ fov: 60, near: 0.01, far: 1000, position: [2.5, 2.0, 2.5] }}
-      dpr={[1, 1.5]}
+      gl={{ powerPreference: 'low-power', antialias: false }}
+      dpr={secondaryView ? [0.75, 1.0] : [1, 1.5]}
       onCreated={({ gl, camera }) => {
         gl.setClearColor(background, 1)
         gl.autoClear = true
@@ -663,38 +709,45 @@ export default function PointCloudCanvas({
         const wasClick = isClickGesture(canvasGesture.current, e.nativeEvent)
         onPointerUpGesture(canvasGesture.current)
         if (!wasClick) return
+        setFollowCameraId(null)
         onSelect(null)
       }}
     >
-      <DebugOverlay enabled={debugOverlayEnabled} />
+      <DebugOverlay enabled={debugOverlayEnabled && !secondaryView} />
       <ViewCameraReporter />
       <OverlayCameraRenderPass />
-      <PeekThroughCamera request={peekRequest} enabled={!activeCameraReady} worldToView={convention.worldToView} />
+      <FollowCameraDriver cameraMeta={followCameraMeta} enabled={followCameraActive} worldToView={convention.worldToView} />
 
       <ambientLight intensity={0.6} />
       <directionalLight position={[5, 8, 5]} intensity={0.8} />
 
-      {controlsReady && focusId && !activeCameraReady && (
+      {controlsReady && focusId && !activeCameraReady && !followCameraActive && (
         <FrameCamera bounds={focusBounds} focusToken={focusToken} forward={viewForward} topDown={topDownOnFocus} />
       )}
 
       <ActiveCameraDriver meta={activeCameraMeta} enabled={activeCameraReady} worldToView={convention.worldToView} />
 
-      <WASDControls enabled={!activeCameraReady} speed={2.0} />
+      <WASDControls enabled={!activeCameraReady && !followCameraActive} speed={2.0} />
 
       {/* Viewer-space grid */}
-      <gridHelper args={[10, 10, '#29324a', '#1b2235']} />
+      {!secondaryView && <gridHelper args={[10, 10, '#29324a', '#1b2235']} />}
 
       {/* World rotated per convention */}
       <group quaternion={convention.worldToView}>
-        <axesHelper args={[1.5]} />
+        {!secondaryView && <axesHelper args={[1.5]} />}
         <MultiPointCloudScene
           cloudIds={cloudIds}
           selectedId={selectedId}
-          renderMode={renderMode}
-          onSelect={(id) => onSelect(id)}
+          renderMode={effectiveRenderMode}
+          sample={sample}
+          enabled={pageActive}
+          onSelect={(id) => {
+            setFollowCameraId(null)
+            onSelect(id)
+          }}
           onFocus={(id) => {
             // Explicit user intent: always refit on double-click, even if it's already focused.
+            setFollowCameraId(null)
             setFocusId(id)
             bumpFocus('cloud:doubleclick-focus')
             onFocus(id)
@@ -704,8 +757,14 @@ export default function PointCloudCanvas({
         <GaussianSplatScene
           elementIds={gaussianIds}
           selectedId={selectedId}
-          onSelect={(id) => onSelect(id)}
+          sample={sample}
+          enabled={pageActive}
+          onSelect={(id) => {
+            setFollowCameraId(null)
+            onSelect(id)
+          }}
           onFocus={(id) => {
+            setFollowCameraId(null)
             setFocusId(id)
             bumpFocus('gaussians:doubleclick-focus')
             onFocus(id)
@@ -715,10 +774,11 @@ export default function PointCloudCanvas({
         <CameraScene
           cameras={cameraVisuals}
           selectedId={selectedId}
+          hiddenIds={Array.from(hiddenCameraIds)}
           onSelect={(id) => onSelect(id)}
           onFocus={(id) => {
             setFocusId(id)
-            triggerCameraPeek(id, 'camera:doubleclick-peek')
+            setFollowCameraId(id)
             onFocus(id)
           }}
           onRegisterObject={registerObject}
@@ -735,6 +795,9 @@ export default function PointCloudCanvas({
           maxDistance={Infinity}
           enableDamping
           dampingFactor={0.07}
+          onStart={() => {
+            setFollowCameraId(null)
+          }}
           ref={(ctrl) => {
             orbitRef.current = ctrl
             if (!ctrl) return
@@ -756,7 +819,7 @@ export default function PointCloudCanvas({
         />
       )}
 
-      {selectedObject && onTransformCommit && (
+      {selectedObject && onTransformCommit && !followCameraActive && (
         <TransformControls
           object={selectedObject}
           mode={transformMode}

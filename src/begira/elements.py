@@ -36,6 +36,8 @@ class ElementBase:
     rotation: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0)
     visible: bool = True
     deleted: bool = False
+    state_revision: int = 1
+    data_revision: int = 1
 
 
 @dataclass(frozen=True)

@@ -7,25 +7,10 @@ import numpy as np
 from fastapi import FastAPI, HTTPException, Request
 from starlette.responses import Response
 
+from .api_time import parse_sample_body, parse_sample_query, parse_sample_query_with_static
 from .elements import PointCloudElement, GaussianSplatElement, CameraElement, ImageElement
+from .element_projection import element_to_list_item, element_to_meta_item
 from .registry import REGISTRY
-
-
-def _bounds_from_positions(pos: np.ndarray) -> dict[str, list[float]]:
-    if pos.size == 0:
-        return {"min": [0.0, 0.0, 0.0], "max": [0.0, 0.0, 0.0]}
-    bounds_min = pos.min(axis=0)
-    bounds_max = pos.max(axis=0)
-    return {"min": bounds_min.tolist(), "max": bounds_max.tolist()}
-
-
-def _bounds_from_position(pos: tuple[float, float, float], *, radius: float = 0.5) -> dict[str, list[float]]:
-    x, y, z = float(pos[0]), float(pos[1]), float(pos[2])
-    r = float(radius)
-    return {
-        "min": [x - r, y - r, z - r],
-        "max": [x + r, y + r, z + r],
-    }
 
 
 def mount_elements_api(app: FastAPI) -> None:
@@ -34,199 +19,49 @@ def mount_elements_api(app: FastAPI) -> None:
     These are additive and keep the existing pointcloud routes working.
     """
 
+    @app.get("/api/timeline")
+    def get_timeline() -> dict[str, Any]:
+        return dict(REGISTRY.timeline_info())
+
     @app.get("/api/elements")
-    def list_elements() -> list[dict[str, Any]]:
-        els = REGISTRY.list_elements()
-        out: list[dict[str, Any]] = []
-        for e in els:
-            if isinstance(e, PointCloudElement):
-                out.append(
-                    {
-                        "id": e.id,
-                        "type": e.type,
-                        "name": e.name,
-                        "revision": int(e.revision),
-                        "createdAt": float(e.created_at),
-                        "bounds": _bounds_from_positions(e.positions),
-                        "summary": {"pointCount": int(e.positions.shape[0])},
-                        "visible": bool(e.visible),
-                        "deleted": bool(e.deleted),
-                    }
-                )
-            elif isinstance(e, GaussianSplatElement):
-                out.append(
-                    {
-                        "id": e.id,
-                        "type": e.type,
-                        "name": e.name,
-                        "revision": int(e.revision),
-                        "createdAt": float(e.created_at),
-                        "bounds": _bounds_from_positions(e.positions),
-                        "summary": {"count": int(e.positions.shape[0])},
-                        "visible": bool(e.visible),
-                        "deleted": bool(e.deleted),
-                    }
-                )
-            elif isinstance(e, CameraElement):
-                out.append(
-                    {
-                        "id": e.id,
-                        "type": e.type,
-                        "name": e.name,
-                        "revision": int(e.revision),
-                        "createdAt": float(e.created_at),
-                        "bounds": _bounds_from_position(e.position),
-                        "fov": float(e.fov),
-                        "near": float(e.near),
-                        "far": float(e.far),
-                        "width": int(e.width) if e.width is not None else None,
-                        "height": int(e.height) if e.height is not None else None,
-                        "intrinsicMatrix": [list(row) for row in e.intrinsic_matrix] if e.intrinsic_matrix is not None else None,
-                        "position": list(e.position),
-                        "rotation": list(e.rotation),
-                        "visible": bool(e.visible),
-                        "deleted": bool(e.deleted),
-                    }
-                )
-            elif isinstance(e, ImageElement):
-                out.append(
-                    {
-                        "id": e.id,
-                        "type": e.type,
-                        "name": e.name,
-                        "revision": int(e.revision),
-                        "createdAt": float(e.created_at),
-                        "summary": {"width": int(e.width), "height": int(e.height), "channels": int(e.channels)},
-                        "mimeType": str(e.mime_type),
-                        "visible": bool(e.visible),
-                        "deleted": bool(e.deleted),
-                    }
-                )
-            else:
-                out.append(
-                    {
-                        "id": e.id,
-                        "type": e.type,
-                        "name": e.name,
-                        "revision": int(e.revision),
-                        "createdAt": float(e.created_at),
-                    }
-                )
-        return out
+    def list_elements(frame: int | None = None, timestamp: float | None = None) -> list[dict[str, Any]]:
+        try:
+            frame_v, ts_v = parse_sample_query(frame, timestamp)
+            els = REGISTRY.list_elements(frame=frame_v, timestamp=ts_v)
+        except ValueError as ex:
+            raise HTTPException(status_code=400, detail=str(ex))
+        return [element_to_list_item(e) for e in els]
 
     @app.get("/api/elements/{element_id}/meta")
-    def get_element_meta(element_id: str) -> dict[str, Any]:
-        e = REGISTRY.get_element(element_id)
+    def get_element_meta(element_id: str, frame: int | None = None, timestamp: float | None = None) -> dict[str, Any]:
+        try:
+            frame_v, ts_v = parse_sample_query(frame, timestamp)
+        except ValueError as ex:
+            raise HTTPException(status_code=400, detail=str(ex))
+
+        e = REGISTRY.get_element(element_id, frame=frame_v, timestamp=ts_v)
         if e is None:
-            raise HTTPException(status_code=404, detail="Unknown element")
-
-        if isinstance(e, PointCloudElement):
-            schema: dict[str, dict[str, Any]] = {"position": {"type": "float32", "components": 3}}
-            if e.colors is not None:
-                schema["color"] = {"type": "uint8", "components": 3, "normalized": True}
-
-            return {
-                "id": e.id,
-                "type": e.type,
-                "name": e.name,
-                "revision": int(e.revision),
-                "bounds": _bounds_from_positions(e.positions),
-                "endianness": "little",
-                "pointSize": float(e.point_size),
-                "pointCount": int(e.positions.shape[0]),
-                "interleaved": e.colors is not None,
-                "bytesPerPoint": int(12 + (3 if e.colors is not None else 0)),
-                "position": list(e.position),
-                "rotation": list(e.rotation),
-                "visible": bool(e.visible),
-                "deleted": bool(e.deleted),
-                "schema": schema,
-                "payloads": {
-                    "points": {
-                        "url": f"/api/elements/{e.id}/payloads/points",
-                        "contentType": "application/octet-stream",
-                    }
-                },
-            }
-
-        if isinstance(e, GaussianSplatElement):
-            schema = {
-                "position": {"type": "float32", "components": 3},
-                "sh0": {"type": "float32", "components": 3},
-                "opacity": {"type": "float32", "components": 1},
-                "scale": {"type": "float32", "components": 3},
-                "rotation": {"type": "float32", "components": 4},
-            }
-            return {
-                "id": e.id,
-                "type": e.type,
-                "name": e.name,
-                "revision": int(e.revision),
-                "bounds": _bounds_from_positions(e.positions),
-                "endianness": "little",
-                "pointSize": float(e.point_size),
-                "count": int(e.positions.shape[0]),
-                "position": list(e.position),
-                "rotation": list(e.rotation),
-                "visible": bool(e.visible),
-                "deleted": bool(e.deleted),
-                "bytesPerGaussian": 14 * 4,
-                "schema": schema,
-                "payloads": {
-                    "gaussians": {
-                        "url": f"/api/elements/{e.id}/payloads/gaussians",
-                        "contentType": "application/octet-stream",
-                    }
-                },
-            }
-
-        if isinstance(e, CameraElement):
-            return {
-                "id": e.id,
-                "type": e.type,
-                "name": e.name,
-                "revision": int(e.revision),
-                "fov": float(e.fov),
-                "near": float(e.near),
-                "far": float(e.far),
-                "width": int(e.width) if e.width is not None else None,
-                "height": int(e.height) if e.height is not None else None,
-                "intrinsicMatrix": [list(row) for row in e.intrinsic_matrix] if e.intrinsic_matrix is not None else None,
-                "position": list(e.position),
-                "rotation": list(e.rotation),
-                "visible": bool(e.visible),
-                "deleted": bool(e.deleted),
-            }
-
-        if isinstance(e, ImageElement):
-            return {
-                "id": e.id,
-                "type": e.type,
-                "name": e.name,
-                "revision": int(e.revision),
-                "width": int(e.width),
-                "height": int(e.height),
-                "channels": int(e.channels),
-                "mimeType": str(e.mime_type),
-                "position": list(e.position),
-                "rotation": list(e.rotation),
-                "visible": bool(e.visible),
-                "deleted": bool(e.deleted),
-                "payloads": {
-                    "image": {
-                        "url": f"/api/elements/{e.id}/payloads/image",
-                        "contentType": str(e.mime_type),
-                    }
-                },
-            }
-
-        raise HTTPException(status_code=400, detail=f"Unsupported element type: {e.type}")
+            raise HTTPException(status_code=404, detail="Unknown element or no sample at requested time")
+        try:
+            return element_to_meta_item(e)
+        except ValueError as ex:
+            raise HTTPException(status_code=400, detail=str(ex))
 
     @app.get("/api/elements/{element_id}/payloads/{payload_name}")
-    def get_element_payload(element_id: str, payload_name: str) -> Response:
-        e = REGISTRY.get_element(element_id)
+    def get_element_payload(
+        element_id: str,
+        payload_name: str,
+        frame: int | None = None,
+        timestamp: float | None = None,
+    ) -> Response:
+        try:
+            frame_v, ts_v = parse_sample_query(frame, timestamp)
+        except ValueError as ex:
+            raise HTTPException(status_code=400, detail=str(ex))
+
+        e = REGISTRY.get_element(element_id, frame=frame_v, timestamp=ts_v)
         if e is None:
-            raise HTTPException(status_code=404, detail="Unknown element")
+            raise HTTPException(status_code=404, detail="Unknown element or no sample at requested time")
 
         if isinstance(e, PointCloudElement):
             if payload_name != "points":
@@ -271,7 +106,7 @@ def mount_elements_api(app: FastAPI) -> None:
         raise HTTPException(status_code=400, detail=f"Unsupported element type: {e.type}")
 
     @app.post("/api/elements/pointclouds/upload")
-    def request_pointcloud_upload(body: dict) -> dict:
+    def request_pointcloud_upload(body: dict[str, Any]) -> dict[str, Any]:
         """Request an upload slot for a pointcloud element."""
 
         try:
@@ -302,6 +137,11 @@ def mount_elements_api(app: FastAPI) -> None:
             except Exception:
                 raise HTTPException(status_code=400, detail="Invalid pointSize")
 
+        try:
+            static_v, frame_v, ts_v = parse_sample_body(body)
+        except ValueError as ex:
+            raise HTTPException(status_code=400, detail=str(ex))
+
         bytes_per_point = 12 + (3 if has_color else 0)
 
         return {
@@ -312,10 +152,13 @@ def mount_elements_api(app: FastAPI) -> None:
             "hasColor": has_color,
             "bytesPerPoint": bytes_per_point,
             "uploadUrl": f"/api/elements/{element_id}/payloads/points",
+            "static": static_v,
+            "frame": frame_v,
+            "timestamp": ts_v,
         }
 
     @app.put("/api/elements/{element_id}/payloads/points")
-    async def upload_pointcloud_points(element_id: str, request: Request) -> dict:
+    async def upload_pointcloud_points(element_id: str, request: Request) -> dict[str, Any]:
         """Upload raw point buffer and upsert as a pointcloud element."""
 
         name = request.query_params.get("name")
@@ -330,6 +173,15 @@ def mount_elements_api(app: FastAPI) -> None:
                 raise HTTPException(status_code=400, detail="Invalid pointSize")
         else:
             point_size_f = None
+
+        try:
+            static_v, frame_v, ts_v = parse_sample_query_with_static(
+                request.query_params.get("frame"),
+                request.query_params.get("timestamp"),
+                request.query_params.get("static"),
+            )
+        except ValueError as ex:
+            raise HTTPException(status_code=400, detail=str(ex))
 
         raw = await request.body()
         nbytes = len(raw)
@@ -382,12 +234,23 @@ def mount_elements_api(app: FastAPI) -> None:
             colors=colors,
             point_size=point_size_f,
             element_id=element_id,
+            static=static_v,
+            frame=frame_v,
+            timestamp=ts_v,
         )
 
-        return {"ok": True, "id": pc.id, "type": pc.type, "revision": int(pc.revision), "pointCount": pc.point_count}
+        return {
+            "ok": True,
+            "id": pc.id,
+            "type": pc.type,
+            "revision": int(pc.revision),
+            "stateRevision": int(pc.state_revision),
+            "dataRevision": int(pc.data_revision),
+            "pointCount": pc.point_count,
+        }
 
     @app.post("/api/elements/gaussians/upload")
-    def request_gaussians_upload(body: dict) -> dict:
+    def request_gaussians_upload(body: dict[str, Any]) -> dict[str, Any]:
         """Request an upload slot for a gaussians element."""
 
         try:
@@ -410,6 +273,11 @@ def mount_elements_api(app: FastAPI) -> None:
         if element_id is None:
             element_id = uuid.uuid4().hex
 
+        try:
+            static_v, frame_v, ts_v = parse_sample_body(body)
+        except ValueError as ex:
+            raise HTTPException(status_code=400, detail=str(ex))
+
         # [pos(3), sh0(3), opacity(1), scale(3), rot(4)] = 14 floats = 56 bytes
         bytes_per_gaussian = 14 * 4
 
@@ -420,15 +288,27 @@ def mount_elements_api(app: FastAPI) -> None:
             "count": count,
             "bytesPerGaussian": bytes_per_gaussian,
             "uploadUrl": f"/api/elements/{element_id}/payloads/gaussians",
+            "static": static_v,
+            "frame": frame_v,
+            "timestamp": ts_v,
         }
 
     @app.put("/api/elements/{element_id}/payloads/gaussians")
-    async def upload_gaussians_payload(element_id: str, request: Request) -> dict:
+    async def upload_gaussians_payload(element_id: str, request: Request) -> dict[str, Any]:
         """Upload raw gaussians buffer and upsert as a gaussians element."""
 
         name = request.query_params.get("name")
         if not name:
             raise HTTPException(status_code=400, detail="Missing query param: name")
+
+        try:
+            static_v, frame_v, ts_v = parse_sample_query_with_static(
+                request.query_params.get("frame"),
+                request.query_params.get("timestamp"),
+                request.query_params.get("static"),
+            )
+        except ValueError as ex:
+            raise HTTPException(status_code=400, detail=str(ex))
 
         raw = await request.body()
         nbytes = len(raw)
@@ -464,12 +344,23 @@ def mount_elements_api(app: FastAPI) -> None:
             scales=scales,
             rotations=rotations,
             element_id=element_id,
+            static=static_v,
+            frame=frame_v,
+            timestamp=ts_v,
         )
 
-        return {"ok": True, "id": gs.id, "type": gs.type, "revision": int(gs.revision), "count": gs.count}
+        return {
+            "ok": True,
+            "id": gs.id,
+            "type": gs.type,
+            "revision": int(gs.revision),
+            "stateRevision": int(gs.state_revision),
+            "dataRevision": int(gs.data_revision),
+            "count": gs.count,
+        }
 
     @app.post("/api/elements/images/upload")
-    def request_image_upload(body: dict) -> dict:
+    def request_image_upload(body: dict[str, Any]) -> dict[str, Any]:
         """Request an upload slot for an image element."""
         try:
             name = str(body.get("name"))
@@ -504,6 +395,11 @@ def mount_elements_api(app: FastAPI) -> None:
         if element_id is None:
             element_id = uuid.uuid4().hex
 
+        try:
+            static_v, frame_v, ts_v = parse_sample_body(body)
+        except ValueError as ex:
+            raise HTTPException(status_code=400, detail=str(ex))
+
         return {
             "id": element_id,
             "type": "image",
@@ -513,10 +409,13 @@ def mount_elements_api(app: FastAPI) -> None:
             "channels": channels,
             "mimeType": mime_type,
             "uploadUrl": f"/api/elements/{element_id}/payloads/image",
+            "static": static_v,
+            "frame": frame_v,
+            "timestamp": ts_v,
         }
 
     @app.put("/api/elements/{element_id}/payloads/image")
-    async def upload_image_payload(element_id: str, request: Request) -> dict:
+    async def upload_image_payload(element_id: str, request: Request) -> dict[str, Any]:
         name = request.query_params.get("name")
         if not name:
             raise HTTPException(status_code=400, detail="Missing query param: name")
@@ -537,6 +436,15 @@ def mount_elements_api(app: FastAPI) -> None:
         if channels <= 0:
             raise HTTPException(status_code=400, detail="channels must be a positive integer")
 
+        try:
+            static_v, frame_v, ts_v = parse_sample_query_with_static(
+                request.query_params.get("frame"),
+                request.query_params.get("timestamp"),
+                request.query_params.get("static"),
+            )
+        except ValueError as ex:
+            raise HTTPException(status_code=400, detail=str(ex))
+
         raw = await request.body()
         if len(raw) == 0:
             raise HTTPException(status_code=400, detail="Image payload is empty")
@@ -550,6 +458,9 @@ def mount_elements_api(app: FastAPI) -> None:
                 height=height,
                 channels=channels,
                 element_id=element_id,
+                static=static_v,
+                frame=frame_v,
+                timestamp=ts_v,
             )
         except (TypeError, ValueError) as ex:
             raise HTTPException(status_code=400, detail=str(ex))
@@ -559,13 +470,15 @@ def mount_elements_api(app: FastAPI) -> None:
             "id": img.id,
             "type": img.type,
             "revision": int(img.revision),
+            "stateRevision": int(img.state_revision),
+            "dataRevision": int(img.data_revision),
             "width": int(img.width),
             "height": int(img.height),
             "channels": int(img.channels),
         }
 
     @app.post("/api/elements/cameras")
-    def create_camera(body: dict) -> dict[str, Any]:
+    def create_camera(body: dict[str, Any]) -> dict[str, Any]:
         try:
             name = str(body.get("name") or "Camera")
         except Exception:
@@ -594,8 +507,9 @@ def mount_elements_api(app: FastAPI) -> None:
             width = int(width_raw) if width_raw is not None else None
             height = int(height_raw) if height_raw is not None else None
             intrinsic_matrix = body.get("intrinsicMatrix", body.get("intrinsic_matrix", None))
+            static_v, frame_v, ts_v = parse_sample_body(body)
         except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail="Invalid camera intrinsics/projection fields")
+            raise HTTPException(status_code=400, detail="Invalid camera intrinsics/projection/time fields")
 
         element_id = body.get("elementId")
         if element_id is not None:
@@ -613,13 +527,23 @@ def mount_elements_api(app: FastAPI) -> None:
                 height=height,
                 intrinsic_matrix=intrinsic_matrix,
                 element_id=element_id,
+                static=static_v,
+                frame=frame_v,
+                timestamp=ts_v,
             )
-            return {"ok": True, "id": cam.id, "type": cam.type, "revision": int(cam.revision)}
+            return {
+                "ok": True,
+                "id": cam.id,
+                "type": cam.type,
+                "revision": int(cam.revision),
+                "stateRevision": int(cam.state_revision),
+                "dataRevision": int(cam.data_revision),
+            }
         except (TypeError, ValueError) as ex:
             raise HTTPException(status_code=400, detail=str(ex))
 
     @app.patch("/api/elements/{element_id}/meta")
-    def patch_element_meta(element_id: str, body: dict) -> dict[str, Any]:
+    def patch_element_meta(element_id: str, body: dict[str, Any]) -> dict[str, Any]:
         e = REGISTRY.get_element(element_id)
         if e is None:
             raise HTTPException(status_code=404, detail="Unknown element")
@@ -655,6 +579,8 @@ def mount_elements_api(app: FastAPI) -> None:
             elif "intrinsic_matrix" in body:
                 intrinsic_matrix = body.get("intrinsic_matrix")
 
+            static_v, frame_v, ts_v = parse_sample_body(body)
+
             updated = REGISTRY.update_element_meta(
                 element_id,
                 position=position,
@@ -668,17 +594,42 @@ def mount_elements_api(app: FastAPI) -> None:
                 width=int(width) if width is not None else None,
                 height=int(height) if height is not None else None,
                 intrinsic_matrix=intrinsic_matrix,
+                static=static_v,
+                frame=frame_v,
+                timestamp=ts_v,
             )
-            return {"ok": True, "id": updated.id, "type": updated.type, "revision": int(updated.revision)}
+            return {
+                "ok": True,
+                "id": updated.id,
+                "type": updated.type,
+                "revision": int(updated.revision),
+                "stateRevision": int(updated.state_revision),
+                "dataRevision": int(updated.data_revision),
+            }
         except (TypeError, ValueError) as ex:
             raise HTTPException(status_code=400, detail=str(ex))
         except KeyError:
             raise HTTPException(status_code=404, detail="Unknown element")
 
     @app.delete("/api/elements/{element_id}")
-    def delete_element(element_id: str) -> dict[str, Any]:
+    def delete_element(
+        element_id: str,
+        frame: int | None = None,
+        timestamp: float | None = None,
+        static: str | None = None,
+    ) -> dict[str, Any]:
         try:
-            e = REGISTRY.delete_element(element_id)
-            return {"ok": True, "id": e.id, "type": e.type, "revision": int(e.revision)}
+            static_v, frame_v, ts_v = parse_sample_query_with_static(frame, timestamp, static)
+            e = REGISTRY.delete_element(element_id, static=static_v, frame=frame_v, timestamp=ts_v)
+            return {
+                "ok": True,
+                "id": e.id,
+                "type": e.type,
+                "revision": int(e.revision),
+                "stateRevision": int(e.state_revision),
+                "dataRevision": int(e.data_revision),
+            }
+        except ValueError as ex:
+            raise HTTPException(status_code=400, detail=str(ex))
         except KeyError:
             raise HTTPException(status_code=404, detail="Unknown element")

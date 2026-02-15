@@ -6,6 +6,7 @@ import { getCircleSpriteTexture } from './spriteCircle'
 import { usePointCloud } from './usePointCloud'
 import { useThree } from '@react-three/fiber'
 import { DEFAULT_DEPTH_COLORMAP, DEFAULT_HEIGHT_COLORMAP, buildColormapLUT, sampleColormapLUT, type ColormapId } from './colormaps'
+import type { SampleQuery } from './api'
 
 export type PointCloudRenderMode = 'fast' | 'circles' | 'quality'
 
@@ -15,6 +16,8 @@ function Cloud({
   onSelect,
   onFocus,
   renderMode,
+  sample,
+  enabled = true,
   onRegisterObject,
 }: {
   cloudId: string
@@ -22,9 +25,11 @@ function Cloud({
   onSelect: (id: string | null) => void
   onFocus: (id: string) => void
   renderMode: PointCloudRenderMode
+  sample?: SampleQuery
+  enabled?: boolean
   onRegisterObject?: (id: string, obj: THREE.Object3D | null) => void
 }) {
-  const state = usePointCloud(cloudId)
+  const state = usePointCloud(cloudId, sample, enabled)
   const circleMap = useMemo(() => getCircleSpriteTexture(), [])
 
   // Note: selection uses onClick/onDoubleClick to avoid custom gesture logic.
@@ -401,6 +406,8 @@ export default function MultiPointCloudScene({
   onSelect,
   onFocus,
   renderMode = 'fast',
+  sample,
+  enabled = true,
   onRegisterObject,
 }: {
   cloudIds: string[]
@@ -408,6 +415,8 @@ export default function MultiPointCloudScene({
   onSelect: (id: string | null) => void
   onFocus: (id: string) => void
   renderMode?: PointCloudRenderMode
+  sample?: SampleQuery
+  enabled?: boolean
   onRegisterObject?: (id: string, obj: THREE.Object3D | null) => void
 }) {
   return (
@@ -420,6 +429,8 @@ export default function MultiPointCloudScene({
           onSelect={onSelect}
           onFocus={onFocus}
           renderMode={renderMode}
+          sample={sample}
+          enabled={enabled}
           onRegisterObject={onRegisterObject}
         />
       ))}

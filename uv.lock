@@ -44,6 +44,7 @@ dependencies = [
     { name = "opencv-python" },
     { name = "pillow" },
     { name = "plyfile" },
+    { name = "pytest" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -60,6 +61,7 @@ requires-dist = [
     { name = "opencv-python", specifier = ">=4.13.0.92" },
     { name = "pillow", specifier = ">=12.1.1" },
     { name = "plyfile", specifier = ">=1.1" },
+    { name = "pytest", specifier = ">=9.0.2" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.27" },
 ]

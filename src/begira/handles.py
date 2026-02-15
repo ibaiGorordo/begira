@@ -1,22 +1,50 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Protocol, Self
 
 import numpy as np
 
 
 class ElementOps(Protocol):
-    def delete_element(self, element_id: str, *, timeout_s: float = 10.0) -> None: ...
-    def set_element_visibility(self, element_id: str, visible: bool, *, timeout_s: float = 10.0) -> None: ...
+    def delete_element(
+        self,
+        element_id: str,
+        *,
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        static: bool = False,
+        timeout_s: float = 10.0,
+    ) -> None: ...
+    def set_element_visibility(
+        self,
+        element_id: str,
+        visible: bool,
+        *,
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        static: bool = False,
+        timeout_s: float = 10.0,
+    ) -> None: ...
     def log_transform(
         self,
         element_id: str,
         *,
         position: tuple[float, float, float] | list[float] | None = None,
         rotation: tuple[float, float, float, float] | list[float] | None = None,
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        static: bool = False,
         timeout_s: float = 10.0,
     ) -> None: ...
-    def get_element_meta(self, element_id: str, *, timeout_s: float = 10.0) -> dict[str, Any]: ...
+    def get_element_meta(
+        self,
+        element_id: str,
+        *,
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        timeout_s: float = 10.0,
+    ) -> dict[str, Any]: ...
 
 
 def _quat_from_matrix(m: np.ndarray) -> tuple[float, float, float, float]:
@@ -50,9 +78,16 @@ def _quat_from_matrix(m: np.ndarray) -> tuple[float, float, float, float]:
     return float(q[0]), float(q[1]), float(q[2]), float(q[3])
 
 
-def _coerce_target_position(ops: ElementOps, target: object, *, timeout_s: float = 10.0) -> np.ndarray:
+def _coerce_target_position(
+    ops: ElementOps,
+    target: object,
+    *,
+    frame: int | None = None,
+    timestamp: float | datetime | None = None,
+    timeout_s: float = 10.0,
+) -> np.ndarray:
     if isinstance(target, ElementHandle):
-        meta = ops.get_element_meta(target.id, timeout_s=timeout_s)
+        meta = ops.get_element_meta(target.id, frame=frame, timestamp=timestamp, timeout_s=timeout_s)
         pos = meta.get("position")
         if isinstance(pos, list) and len(pos) == 3:
             return np.asarray(pos, dtype=np.float64)
@@ -156,8 +191,14 @@ class ElementHandle(str):
     def element_type(self) -> str | None:
         return self._element_type
 
-    def get_meta(self, *, timeout_s: float = 10.0) -> dict[str, Any]:
-        return self._ops.get_element_meta(self.id, timeout_s=timeout_s)
+    def get_meta(
+        self,
+        *,
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        timeout_s: float = 10.0,
+    ) -> dict[str, Any]:
+        return self._ops.get_element_meta(self.id, frame=frame, timestamp=timestamp, timeout_s=timeout_s)
 
     @property
     def meta(self) -> dict[str, Any]:
@@ -243,24 +284,63 @@ class ElementHandle(str):
             return value
         return None
 
-    def set_visibility(self, visible: bool, *, timeout_s: float = 10.0) -> Self:
-        self._ops.set_element_visibility(self.id, bool(visible), timeout_s=timeout_s)
+    def set_visibility(
+        self,
+        visible: bool,
+        *,
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        static: bool = False,
+        timeout_s: float = 10.0,
+    ) -> Self:
+        self._ops.set_element_visibility(
+            self.id,
+            bool(visible),
+            frame=frame,
+            timestamp=timestamp,
+            static=static,
+            timeout_s=timeout_s,
+        )
         return self
 
-    def disable(self, *, timeout_s: float = 10.0) -> Self:
-        return self.set_visibility(False, timeout_s=timeout_s)
+    def disable(
+        self,
+        *,
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        static: bool = False,
+        timeout_s: float = 10.0,
+    ) -> Self:
+        return self.set_visibility(False, frame=frame, timestamp=timestamp, static=static, timeout_s=timeout_s)
 
-    def enable(self, *, timeout_s: float = 10.0) -> Self:
-        return self.set_visibility(True, timeout_s=timeout_s)
+    def enable(
+        self,
+        *,
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        static: bool = False,
+        timeout_s: float = 10.0,
+    ) -> Self:
+        return self.set_visibility(True, frame=frame, timestamp=timestamp, static=static, timeout_s=timeout_s)
 
-    def delete(self, *, timeout_s: float = 10.0) -> None:
-        self._ops.delete_element(self.id, timeout_s=timeout_s)
+    def delete(
+        self,
+        *,
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        static: bool = False,
+        timeout_s: float = 10.0,
+    ) -> None:
+        self._ops.delete_element(self.id, frame=frame, timestamp=timestamp, static=static, timeout_s=timeout_s)
 
     def set_pose(
         self,
         *,
         position: tuple[float, float, float] | list[float] | np.ndarray | None = None,
         rotation: tuple[float, float, float, float] | list[float] | np.ndarray | None = None,
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        static: bool = False,
         timeout_s: float = 10.0,
     ) -> Self:
         pos_payload: tuple[float, float, float] | None = None
@@ -272,47 +352,72 @@ class ElementHandle(str):
             q = np.asarray(rotation, dtype=np.float64).reshape(4)
             q /= np.linalg.norm(q) + 1e-12
             rot_payload = (float(q[0]), float(q[1]), float(q[2]), float(q[3]))
-        self._ops.log_transform(self.id, position=pos_payload, rotation=rot_payload, timeout_s=timeout_s)
+        self._ops.log_transform(
+            self.id,
+            position=pos_payload,
+            rotation=rot_payload,
+            frame=frame,
+            timestamp=timestamp,
+            static=static,
+            timeout_s=timeout_s,
+        )
         return self
 
-    def set_transform(self, transform: np.ndarray | list[list[float]] | tuple[tuple[float, ...], ...], *, timeout_s: float = 10.0) -> Self:
+    def set_transform(
+        self,
+        transform: np.ndarray | list[list[float]] | tuple[tuple[float, ...], ...],
+        *,
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        static: bool = False,
+        timeout_s: float = 10.0,
+    ) -> Self:
         t = np.asarray(transform, dtype=np.float64)
         if t.shape != (4, 4):
             raise ValueError("transform must be a 4x4 homogeneous matrix")
         rot = t[:3, :3]
         pos = t[:3, 3]
         quat = _quat_from_matrix(rot)
-        return self.set_pose(position=pos, rotation=quat, timeout_s=timeout_s)
+        return self.set_pose(position=pos, rotation=quat, frame=frame, timestamp=timestamp, static=static, timeout_s=timeout_s)
 
     def look_at(
         self,
         target: object,
         distance: float | None = None,
         *,
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        static: bool = False,
         up: tuple[float, float, float] | list[float] | np.ndarray = (0.0, 0.0, 1.0),
         timeout_s: float = 10.0,
     ) -> Self:
         et = self._element_type
         if et is None:
-            meta = self._ops.get_element_meta(self.id, timeout_s=timeout_s)
+            meta = self._ops.get_element_meta(self.id, frame=frame, timestamp=timestamp, timeout_s=timeout_s)
             et = str(meta.get("type") or "")
         if et != "camera":
             raise TypeError(f"look_at is only supported for camera handles (got type={et!r})")
 
-        cam_meta = self._ops.get_element_meta(self.id, timeout_s=timeout_s)
+        cam_meta = self._ops.get_element_meta(self.id, frame=frame, timestamp=timestamp, timeout_s=timeout_s)
         cam_pos_raw = cam_meta.get("position")
         if not isinstance(cam_pos_raw, list) or len(cam_pos_raw) != 3:
             raise ValueError("camera metadata does not contain a valid position")
 
         cam_pos = np.asarray(cam_pos_raw, dtype=np.float64)
-        target_pos = _coerce_target_position(self._ops, target, timeout_s=timeout_s)
+        target_pos = _coerce_target_position(
+            self._ops,
+            target,
+            frame=frame,
+            timestamp=timestamp,
+            timeout_s=timeout_s,
+        )
         if distance is not None:
             cam_pos = _camera_position_with_distance(cam_pos, target_pos, float(distance))
         up_v = np.asarray(up, dtype=np.float64).reshape(3)
         quat = _camera_look_at_quaternion(cam_pos, target_pos, up_v)
         if distance is not None:
-            return self.set_pose(position=cam_pos, rotation=quat, timeout_s=timeout_s)
-        return self.set_pose(rotation=quat, timeout_s=timeout_s)
+            return self.set_pose(position=cam_pos, rotation=quat, frame=frame, timestamp=timestamp, static=static, timeout_s=timeout_s)
+        return self.set_pose(rotation=quat, frame=frame, timestamp=timestamp, static=static, timeout_s=timeout_s)
 
 
 class PointCloudHandle(ElementHandle):

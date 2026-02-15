@@ -7,13 +7,14 @@ import threading
 import time
 import webbrowser
 from dataclasses import dataclass
+from datetime import datetime
 
 import numpy as np
 import uvicorn
 
-from .client import BegiraClient
+from .client import BegiraClient, to_unix_seconds
 from .conventions import CoordinateConvention
-from .elements import CameraElement, GaussianSplatElement, ImageElement, PointCloudElement
+from .element_projection import element_to_meta_item
 from .handles import CameraHandle, GaussianHandle, ImageHandle, PointCloudHandle
 from .image_logging import encode_image_payload
 from .registry import REGISTRY
@@ -38,105 +39,66 @@ class BegiraServer:
         """Set the viewer coordinate convention for this server."""
         self._as_client().set_coordinate_convention(convention, timeout_s=timeout_s)
 
-    @staticmethod
-    def _bounds_from_positions(pos: np.ndarray) -> dict[str, list[float]]:
-        if pos.size == 0:
-            return {"min": [0.0, 0.0, 0.0], "max": [0.0, 0.0, 0.0]}
-        bounds_min = pos.min(axis=0)
-        bounds_max = pos.max(axis=0)
-        return {"min": bounds_min.tolist(), "max": bounds_max.tolist()}
-
-    @staticmethod
-    def _bounds_from_position(pos: tuple[float, float, float], *, radius: float = 0.5) -> dict[str, list[float]]:
-        x, y, z = float(pos[0]), float(pos[1]), float(pos[2])
-        r = float(radius)
-        return {"min": [x - r, y - r, z - r], "max": [x + r, y + r, z + r]}
-
-    def get_element_meta(self, element_id: str, *, timeout_s: float = 10.0) -> dict:
+    def get_element_meta(
+        self,
+        element_id: str,
+        *,
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        timeout_s: float = 10.0,
+    ) -> dict:
         _ = timeout_s
-        e = REGISTRY.get_element(element_id)
+        e = REGISTRY.get_element(
+            element_id,
+            frame=int(frame) if frame is not None else None,
+            timestamp=to_unix_seconds(timestamp),
+        )
         if e is None:
             raise RuntimeError(f"Unknown element: {element_id}")
-        if isinstance(e, PointCloudElement):
-            return {
-                "id": e.id,
-                "type": e.type,
-                "name": e.name,
-                "revision": int(e.revision),
-                "bounds": self._bounds_from_positions(e.positions),
-                "pointCount": int(e.positions.shape[0]),
-                "pointSize": float(e.point_size),
-                "position": list(e.position),
-                "rotation": list(e.rotation),
-                "visible": bool(e.visible),
-                "deleted": bool(e.deleted),
-            }
-        if isinstance(e, GaussianSplatElement):
-            return {
-                "id": e.id,
-                "type": e.type,
-                "name": e.name,
-                "revision": int(e.revision),
-                "bounds": self._bounds_from_positions(e.positions),
-                "count": int(e.positions.shape[0]),
-                "pointSize": float(e.point_size),
-                "position": list(e.position),
-                "rotation": list(e.rotation),
-                "visible": bool(e.visible),
-                "deleted": bool(e.deleted),
-            }
-        if isinstance(e, CameraElement):
-            return {
-                "id": e.id,
-                "type": e.type,
-                "name": e.name,
-                "revision": int(e.revision),
-                "bounds": self._bounds_from_position(e.position),
-                "position": list(e.position),
-                "rotation": list(e.rotation),
-                "fov": float(e.fov),
-                "near": float(e.near),
-                "far": float(e.far),
-                "width": int(e.width) if e.width is not None else None,
-                "height": int(e.height) if e.height is not None else None,
-                "intrinsicMatrix": [list(row) for row in e.intrinsic_matrix] if e.intrinsic_matrix is not None else None,
-                "visible": bool(e.visible),
-                "deleted": bool(e.deleted),
-            }
-        if isinstance(e, ImageElement):
-            return {
-                "id": e.id,
-                "type": e.type,
-                "name": e.name,
-                "revision": int(e.revision),
-                "width": int(e.width),
-                "height": int(e.height),
-                "channels": int(e.channels),
-                "mimeType": str(e.mime_type),
-                "position": list(e.position),
-                "rotation": list(e.rotation),
-                "visible": bool(e.visible),
-                "deleted": bool(e.deleted),
-                "payloads": {
-                    "image": {
-                        "url": f"/api/elements/{e.id}/payloads/image",
-                        "contentType": str(e.mime_type),
-                    }
-                },
-            }
-        raise RuntimeError(f"Unsupported element type: {e.type}")
+        try:
+            return element_to_meta_item(e)
+        except ValueError as ex:
+            raise RuntimeError(str(ex)) from ex
 
-    def delete_element(self, element_id: str, *, timeout_s: float = 10.0) -> None:
+    def delete_element(
+        self,
+        element_id: str,
+        *,
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        static: bool = False,
+        timeout_s: float = 10.0,
+    ) -> None:
         _ = timeout_s
         try:
-            REGISTRY.delete_element(element_id)
+            REGISTRY.delete_element(
+                element_id,
+                frame=int(frame) if frame is not None else None,
+                timestamp=to_unix_seconds(timestamp),
+                static=bool(static),
+            )
         except KeyError as e:
             raise RuntimeError(f"Unknown element: {element_id}") from e
 
-    def set_element_visibility(self, element_id: str, visible: bool, *, timeout_s: float = 10.0) -> None:
+    def set_element_visibility(
+        self,
+        element_id: str,
+        visible: bool,
+        *,
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        static: bool = False,
+        timeout_s: float = 10.0,
+    ) -> None:
         _ = timeout_s
         try:
-            REGISTRY.update_element_meta(element_id, visible=bool(visible))
+            REGISTRY.update_element_meta(
+                element_id,
+                visible=bool(visible),
+                frame=int(frame) if frame is not None else None,
+                timestamp=to_unix_seconds(timestamp),
+                static=bool(static),
+            )
         except KeyError as e:
             raise RuntimeError(f"Unknown element: {element_id}") from e
 
@@ -146,13 +108,23 @@ class BegiraServer:
         *,
         position: tuple[float, float, float] | list[float] | None = None,
         rotation: tuple[float, float, float, float] | list[float] | None = None,
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        static: bool = False,
         timeout_s: float = 10.0,
     ) -> None:
         _ = timeout_s
         pos_v = tuple(float(x) for x in position) if position is not None else None
         rot_v = tuple(float(x) for x in rotation) if rotation is not None else None
         try:
-            REGISTRY.update_element_meta(element_id, position=pos_v, rotation=rot_v)
+            REGISTRY.update_element_meta(
+                element_id,
+                position=pos_v,
+                rotation=rot_v,
+                frame=int(frame) if frame is not None else None,
+                timestamp=to_unix_seconds(timestamp),
+                static=bool(static),
+            )
         except KeyError as e:
             raise RuntimeError(f"Unknown element: {element_id}") from e
 
@@ -164,6 +136,9 @@ class BegiraServer:
         *,
         element_id: str | None = None,
         point_size: float | None = 0.05,
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        static: bool = False,
     ) -> PointCloudHandle:
         """Log (add/update) a pointcloud element."""
 
@@ -180,6 +155,9 @@ class BegiraServer:
             colors=colors,
             point_size=point_size,
             element_id=element_id,
+            frame=int(frame) if frame is not None else None,
+            timestamp=to_unix_seconds(timestamp),
+            static=bool(static),
         )
         return PointCloudHandle(pc.id, ops=self, element_type="pointcloud")
 
@@ -193,6 +171,9 @@ class BegiraServer:
         rotations: np.ndarray | None = None,
         *,
         element_id: str | None = None,
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        static: bool = False,
     ) -> GaussianHandle:
         """Log (add/update) a 3D Gaussian Splatting element."""
 
@@ -244,6 +225,9 @@ class BegiraServer:
             scales=scales,
             rotations=rotations,
             element_id=element_id,
+            frame=int(frame) if frame is not None else None,
+            timestamp=to_unix_seconds(timestamp),
+            static=bool(static),
         )
         return GaussianHandle(gs.id, ops=self, element_type="gaussians")
 
@@ -259,6 +243,9 @@ class BegiraServer:
         width: int | None = None,
         height: int | None = None,
         intrinsic_matrix: np.ndarray | list[list[float]] | tuple[tuple[float, ...], ...] | None = None,
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        static: bool = False,
         element_id: str | None = None,
     ) -> CameraHandle:
         """Log (add/update) a camera element."""
@@ -274,6 +261,9 @@ class BegiraServer:
             height=int(height) if height is not None else None,
             intrinsic_matrix=intrinsic_matrix,
             element_id=element_id,
+            frame=int(frame) if frame is not None else None,
+            timestamp=to_unix_seconds(timestamp),
+            static=bool(static),
         )
         return CameraHandle(cam.id, ops=self, element_type="camera")
 
@@ -287,6 +277,9 @@ class BegiraServer:
         width: int | None = None,
         height: int | None = None,
         channels: int | None = None,
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        static: bool = False,
         element_id: str | None = None,
     ) -> ImageHandle:
         """Log (add/update) an image element."""
@@ -306,6 +299,9 @@ class BegiraServer:
             height=int(height),
             channels=int(channels),
             element_id=element_id,
+            frame=int(frame) if frame is not None else None,
+            timestamp=to_unix_seconds(timestamp),
+            static=bool(static),
         )
         return ImageHandle(img.id, ops=self, element_type="image")
 
@@ -351,6 +347,11 @@ class BegiraServer:
     def get_viewer_settings(self, *, timeout_s: float = 10.0) -> dict:
         """Return the active viewer settings for this server."""
         return self._as_client().get_viewer_settings(timeout_s=timeout_s)
+
+    def get_timeline_info(self, *, timeout_s: float = 10.0) -> dict[str, object]:
+        """Return timeline axis ranges and latest cursor positions."""
+        _ = timeout_s
+        return dict(REGISTRY.timeline_info())
 
 
 def _find_free_port(host: str) -> int:

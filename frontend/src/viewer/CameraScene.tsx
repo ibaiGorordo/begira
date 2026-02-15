@@ -149,19 +149,22 @@ function CameraGizmo({
 export default function CameraScene({
   cameras,
   selectedId,
+  hiddenIds = [],
   onSelect,
   onFocus,
   onRegisterObject,
 }: {
   cameras: CameraVisual[]
   selectedId: string | null
+  hiddenIds?: string[]
   onSelect: (id: string | null) => void
   onFocus: (id: string) => void
   onRegisterObject?: (id: string, obj: THREE.Object3D | null) => void
 }) {
+  const hidden = new Set(hiddenIds)
   return (
     <>
-      {cameras.map((camera) => (
+      {cameras.filter((camera) => !hidden.has(camera.id)).map((camera) => (
         <CameraGizmo
           key={camera.id}
           camera={camera}

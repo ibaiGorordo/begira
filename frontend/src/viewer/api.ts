@@ -1,10 +1,50 @@
 export type ElementType = 'pointcloud' | 'gaussians' | 'camera' | 'image'
+export type TimelineAxis = 'frame' | 'timestamp'
+
+export type SampleQuery = {
+  frame?: number
+  timestamp?: number
+}
+
+export type TimelineInfo = {
+  defaultAxis: TimelineAxis
+  axes: Array<{
+    axis: TimelineAxis
+    min: number | null
+    max: number | null
+    hasData: boolean
+  }>
+  latest: {
+    frame: number | null
+    timestamp: number | null
+  }
+}
+
+function appendSampleToUrl(rawUrl: string, sample?: SampleQuery): string {
+  if (!sample) return rawUrl
+  const hasFrame = sample.frame !== undefined
+  const hasTimestamp = sample.timestamp !== undefined
+  if (hasFrame && hasTimestamp) {
+    throw new Error('Sample query cannot include both frame and timestamp')
+  }
+
+  const url = new URL(rawUrl, window.location.origin)
+  if (hasFrame) {
+    url.searchParams.set('frame', String(Math.round(Number(sample.frame))))
+  }
+  if (hasTimestamp) {
+    url.searchParams.set('timestamp', String(Number(sample.timestamp)))
+  }
+  return `${url.pathname}${url.search}`
+}
 
 export type ElementInfo = {
   id: string
   type: ElementType
   name: string
   revision: number
+  stateRevision?: number
+  dataRevision?: number
   createdAt?: number
   bounds?: { min: [number, number, number]; max: [number, number, number] }
   summary?: Record<string, unknown>
@@ -22,6 +62,8 @@ export type PointCloudElementMeta = {
   type: 'pointcloud'
   name: string
   revision: number
+  stateRevision: number
+  dataRevision: number
   pointCount: number
   pointSize: number
   bounds: { min: [number, number, number]; max: [number, number, number] }
@@ -43,6 +85,8 @@ export type GaussianSplatElementMeta = {
   type: 'gaussians'
   name: string
   revision: number
+  stateRevision: number
+  dataRevision: number
   count: number
   pointSize: number
   bounds: { min: [number, number, number]; max: [number, number, number] }
@@ -66,6 +110,8 @@ export type CameraElementMeta = {
   type: 'camera'
   name: string
   revision: number
+  stateRevision: number
+  dataRevision: number
   fov: number
   near: number
   far: number
@@ -79,6 +125,8 @@ export type ImageElementMeta = {
   type: 'image'
   name: string
   revision: number
+  stateRevision: number
+  dataRevision: number
   width: number
   height: number
   channels: number
@@ -110,6 +158,9 @@ export type UpdateElementMetaRequest = {
   fov?: number
   near?: number
   far?: number
+  frame?: number
+  timestamp?: number
+  static?: boolean
 }
 
 export async function fetchEvents(): Promise<Events> {
@@ -118,52 +169,55 @@ export async function fetchEvents(): Promise<Events> {
   return (await res.json()) as Events
 }
 
-export async function fetchElements(): Promise<ElementInfo[]> {
-  const res = await fetch('/api/elements')
+export async function fetchTimelineInfo(): Promise<TimelineInfo> {
+  const res = await fetch('/api/timeline')
+  if (!res.ok) throw new Error(`Failed to get timeline info: ${res.status} ${res.statusText}`)
+  return (await res.json()) as TimelineInfo
+}
+
+export async function fetchElements(sample?: SampleQuery): Promise<ElementInfo[]> {
+  const res = await fetch(appendSampleToUrl('/api/elements', sample))
   if (!res.ok) throw new Error(`Failed to list elements: ${res.status} ${res.statusText}`)
   return (await res.json()) as ElementInfo[]
 }
 
-export async function fetchElementMeta(elementId: string): Promise<any> {
-  const res = await fetch(`/api/elements/${encodeURIComponent(elementId)}/meta`)
+export async function fetchElementMeta(elementId: string, sample?: SampleQuery): Promise<any> {
+  const res = await fetch(appendSampleToUrl(`/api/elements/${encodeURIComponent(elementId)}/meta`, sample))
   if (!res.ok) throw new Error(`Failed to get meta: ${res.status} ${res.statusText}`)
   return await res.json()
 }
 
-export async function fetchPointCloudElementMeta(elementId: string): Promise<PointCloudElementMeta> {
-  const meta = (await fetchElementMeta(elementId)) as PointCloudElementMeta
+export async function fetchPointCloudElementMeta(elementId: string, sample?: SampleQuery): Promise<PointCloudElementMeta> {
+  const meta = (await fetchElementMeta(elementId, sample)) as PointCloudElementMeta
   if (meta.type !== 'pointcloud') throw new Error(`Element ${elementId} is not a pointcloud (type=${(meta as any).type})`)
   return meta
 }
 
-export async function fetchGaussianElementMeta(elementId: string): Promise<GaussianSplatElementMeta> {
-  const meta = (await fetchElementMeta(elementId)) as GaussianSplatElementMeta
+export async function fetchGaussianElementMeta(elementId: string, sample?: SampleQuery): Promise<GaussianSplatElementMeta> {
+  const meta = (await fetchElementMeta(elementId, sample)) as GaussianSplatElementMeta
   if (meta.type !== 'gaussians') throw new Error(`Element ${elementId} is not a gaussians (type=${(meta as any).type})`)
   return meta
 }
 
-export async function fetchCameraElementMeta(elementId: string): Promise<CameraElementMeta> {
-  const meta = (await fetchElementMeta(elementId)) as CameraElementMeta
+export async function fetchCameraElementMeta(elementId: string, sample?: SampleQuery): Promise<CameraElementMeta> {
+  const meta = (await fetchElementMeta(elementId, sample)) as CameraElementMeta
   if (meta.type !== 'camera') throw new Error(`Element ${elementId} is not a camera (type=${(meta as any).type})`)
   return meta
 }
 
-export async function fetchImageElementMeta(elementId: string): Promise<ImageElementMeta> {
-  const meta = (await fetchElementMeta(elementId)) as ImageElementMeta
+export async function fetchImageElementMeta(elementId: string, sample?: SampleQuery): Promise<ImageElementMeta> {
+  const meta = (await fetchElementMeta(elementId, sample)) as ImageElementMeta
   if (meta.type !== 'image') throw new Error(`Element ${elementId} is not an image (type=${(meta as any).type})`)
   return meta
 }
 
-export async function fetchBinaryPayload(url: string): Promise<ArrayBuffer> {
-  const res = await fetch(url)
+export async function fetchBinaryPayload(url: string, sample?: SampleQuery): Promise<ArrayBuffer> {
+  const res = await fetch(appendSampleToUrl(url, sample))
   if (!res.ok) throw new Error(`Failed to get payload: ${res.status} ${res.statusText}`)
   return await res.arrayBuffer()
 }
 
 export async function updatePointCloudSettings(elementId: string, req: UpdatePointCloudSettingsRequest): Promise<void> {
-  // For now, the only mutable pointcloud setting is pointSize.
-  // This just re-uploads meta via a dedicated endpoint once it exists.
-  // Temporary behavior: no-op if server doesn't support settings for elements.
   const res = await fetch(`/api/elements/${encodeURIComponent(elementId)}/meta`, {
     method: 'PATCH',
     headers: { 'content-type': 'application/json' },
@@ -201,6 +255,9 @@ export async function createCamera(req: {
   fov?: number
   near?: number
   far?: number
+  frame?: number
+  timestamp?: number
+  static?: boolean
   elementId?: string | null
 }): Promise<{ id: string }> {
   const res = await fetch('/api/elements/cameras', {

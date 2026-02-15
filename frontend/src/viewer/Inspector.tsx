@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
-import type { ElementInfo } from './api'
+import type { ElementInfo, SampleQuery } from './api'
 import {
   fetchPointCloudElementMeta,
   fetchGaussianElementMeta,
@@ -21,6 +21,9 @@ type Props = {
   transformMode: 'translate' | 'rotate'
   onTransformModeChange: (mode: 'translate' | 'rotate') => void
   onPoseCommit: (id: string, position: [number, number, number], rotation: [number, number, number, number]) => void
+  onOpenCameraView: (cameraId: string) => void
+  sample?: SampleQuery
+  enabled?: boolean
   lookAtTargets: Array<{
     id: string
     name: string
@@ -37,6 +40,9 @@ export default function Inspector({
   transformMode,
   onTransformModeChange,
   onPoseCommit,
+  onOpenCameraView,
+  sample,
+  enabled = true,
   lookAtTargets,
 }: Props) {
   const [pointSize, setPointSize] = useState<number | null>(null)
@@ -107,7 +113,8 @@ export default function Inspector({
       return
     }
 
-    fetchMeta(selected.id)
+    if (!enabled) return
+    fetchMeta(selected.id, sample)
       .then((m: any) => {
         suppressPoseCommitRef.current = true
         setPointSize(m.pointSize ?? null)
@@ -167,7 +174,7 @@ export default function Inspector({
         setColorMap(DEFAULT_HEIGHT_COLORMAP)
       }
     } catch {}
-  }, [selected?.id, isPointCloud, isGaussians, isCamera, isImage])
+  }, [enabled, selected?.id, isPointCloud, isGaussians, isCamera, isImage, sample?.frame, sample?.timestamp])
 
   useEffect(() => {
     try {
@@ -180,6 +187,15 @@ export default function Inspector({
       anyWin.__begira_local_pose = map
     } catch {}
   }, [selected?.id])
+
+  useEffect(() => {
+    if (!enabled || !selected) return
+    try {
+      const anyWin = window as any
+      if (!anyWin.__begira_local_pose) return
+      delete anyWin.__begira_local_pose[selected.id]
+    } catch {}
+  }, [enabled, selected?.id, sample?.frame, sample?.timestamp])
 
   useEffect(() => {
     const handler = () => {
@@ -338,7 +354,7 @@ export default function Inspector({
           } catch {}
           return
         }
-        const meta = await fetchElementMeta(selected.id)
+        const meta = await fetchElementMeta(selected.id, sample)
         if (cancelled) return
         suppressPoseCommitRef.current = true
         if (meta.position) {
@@ -380,10 +396,11 @@ export default function Inspector({
       cancelled = true
       window.clearInterval(id)
     }
-  }, [selected?.id])
+  }, [selected?.id, sample?.frame, sample?.timestamp])
 
   useEffect(() => {
     if (!selected || !position || !rotation) return
+    if (!manualPoseEditRef.current) return
     try {
       const anyWin = window as any
       if (!anyWin.__begira_local_pose) anyWin.__begira_local_pose = {}
@@ -678,6 +695,11 @@ export default function Inspector({
       {isCamera && (
         <div className="inspect-card">
           <div className="inspect-label">Camera</div>
+          <div style={{ marginTop: 6 }}>
+            <button type="button" className="toolbar-btn" onClick={() => onOpenCameraView(selected.id)}>
+              Open Camera View
+            </button>
+          </div>
           <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
             <label style={{ fontSize: 12 }}>
               FOV

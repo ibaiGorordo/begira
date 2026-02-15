@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 import numpy as np
@@ -27,6 +28,49 @@ def _fov_from_intrinsics(k: list[list[float]], height: int) -> float:
     if not np.isfinite(height) or int(height) <= 0:
         raise ValueError("height must be a positive integer when deriving fov from intrinsics")
     return float(np.degrees(2.0 * np.arctan(float(height) / (2.0 * fy))))
+
+
+def to_unix_seconds(timestamp: float | datetime | None) -> float | None:
+    if timestamp is None:
+        return None
+    if isinstance(timestamp, datetime):
+        return float(timestamp.timestamp())
+    value = float(timestamp)
+    if not np.isfinite(value):
+        raise ValueError("timestamp must be finite")
+    return value
+
+
+def _normalize_time_args(
+    *,
+    frame: int | None = None,
+    timestamp: float | datetime | None = None,
+    static: bool = False,
+) -> tuple[bool, int | None, float | None]:
+    frame_v = int(frame) if frame is not None else None
+    ts_v = to_unix_seconds(timestamp)
+    if frame_v is not None and ts_v is not None:
+        raise ValueError("Only one of frame or timestamp can be provided")
+    if static and (frame_v is not None or ts_v is not None):
+        raise ValueError("static=True cannot be combined with frame or timestamp")
+    return bool(static), frame_v, ts_v
+
+
+def _time_body(
+    *,
+    frame: int | None = None,
+    timestamp: float | datetime | None = None,
+    static: bool = False,
+) -> dict[str, Any]:
+    static_v, frame_v, ts_v = _normalize_time_args(frame=frame, timestamp=timestamp, static=static)
+    out: dict[str, Any] = {}
+    if static_v:
+        out["static"] = True
+    if frame_v is not None:
+        out["frame"] = frame_v
+    if ts_v is not None:
+        out["timestamp"] = ts_v
+    return out
 
 
 class BegiraClient:
@@ -64,11 +108,34 @@ class BegiraClient:
                 raise RuntimeError(f"Failed to get viewer settings: {res.status_code} {res.text}")
             return dict(res.json())
 
-    def get_element_meta(self, element_id: str, *, timeout_s: float = 10.0) -> dict[str, Any]:
+    def get_timeline_info(self, *, timeout_s: float = 10.0) -> dict[str, Any]:
         import httpx
 
         with httpx.Client(base_url=self.base_url, timeout=timeout_s) as client:
-            res = client.get(f"/api/elements/{element_id}/meta")
+            res = client.get("/api/timeline")
+            if res.status_code >= 400:
+                raise RuntimeError(f"Failed to get timeline info: {res.status_code} {res.text}")
+            return dict(res.json())
+
+    def get_element_meta(
+        self,
+        element_id: str,
+        *,
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        timeout_s: float = 10.0,
+    ) -> dict[str, Any]:
+        import httpx
+
+        _, frame_v, ts_v = _normalize_time_args(frame=frame, timestamp=timestamp, static=False)
+        params: dict[str, str] = {}
+        if frame_v is not None:
+            params["frame"] = str(frame_v)
+        if ts_v is not None:
+            params["timestamp"] = str(ts_v)
+
+        with httpx.Client(base_url=self.base_url, timeout=timeout_s) as client:
+            res = client.get(f"/api/elements/{element_id}/meta", params=params)
             if res.status_code >= 400:
                 raise RuntimeError(f"Failed to get element meta: {res.status_code} {res.text}")
             return dict(res.json())
@@ -81,19 +148,47 @@ class BegiraClient:
             if res.status_code >= 400:
                 raise RuntimeError(f"Failed to reset project: {res.status_code} {res.text}")
 
-    def delete_element(self, element_id: str, *, timeout_s: float = 10.0) -> None:
+    def delete_element(
+        self,
+        element_id: str,
+        *,
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        static: bool = False,
+        timeout_s: float = 10.0,
+    ) -> None:
         import httpx
 
+        body = _time_body(frame=frame, timestamp=timestamp, static=static)
+        params: dict[str, str] = {}
+        if "frame" in body:
+            params["frame"] = str(body["frame"])
+        if "timestamp" in body:
+            params["timestamp"] = str(body["timestamp"])
+        if "static" in body:
+            params["static"] = "true"
+
         with httpx.Client(base_url=self.base_url, timeout=timeout_s) as client:
-            res = client.delete(f"/api/elements/{element_id}")
+            res = client.delete(f"/api/elements/{element_id}", params=params)
             if res.status_code >= 400:
                 raise RuntimeError(f"Failed to delete element: {res.status_code} {res.text}")
 
-    def set_element_visibility(self, element_id: str, visible: bool, *, timeout_s: float = 10.0) -> None:
+    def set_element_visibility(
+        self,
+        element_id: str,
+        visible: bool,
+        *,
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        static: bool = False,
+        timeout_s: float = 10.0,
+    ) -> None:
         import httpx
 
+        payload: dict[str, Any] = {"visible": bool(visible)}
+        payload.update(_time_body(frame=frame, timestamp=timestamp, static=static))
         with httpx.Client(base_url=self.base_url, timeout=timeout_s) as client:
-            res = client.patch(f"/api/elements/{element_id}/meta", json={"visible": bool(visible)})
+            res = client.patch(f"/api/elements/{element_id}/meta", json=payload)
             if res.status_code >= 400:
                 raise RuntimeError(f"Failed to update visibility: {res.status_code} {res.text}")
 
@@ -103,17 +198,24 @@ class BegiraClient:
         *,
         position: tuple[float, float, float] | list[float] | None = None,
         rotation: tuple[float, float, float, float] | list[float] | None = None,
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        static: bool = False,
         timeout_s: float = 10.0,
     ) -> None:
         import httpx
 
         payload: dict[str, object] = {}
+        has_transform = False
         if position is not None:
             payload["position"] = [float(x) for x in position]
+            has_transform = True
         if rotation is not None:
             payload["rotation"] = [float(x) for x in rotation]
-        if not payload:
+            has_transform = True
+        if not has_transform:
             return
+        payload.update(_time_body(frame=frame, timestamp=timestamp, static=static))
 
         with httpx.Client(base_url=self.base_url, timeout=timeout_s) as client:
             res = client.patch(f"/api/elements/{element_id}/meta", json=payload)
@@ -132,6 +234,9 @@ class BegiraClient:
         width: int | None = None,
         height: int | None = None,
         intrinsic_matrix: np.ndarray | list[list[float]] | tuple[tuple[float, ...], ...] | None = None,
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        static: bool = False,
         element_id: str | None = None,
         timeout_s: float = 10.0,
     ) -> CameraHandle:
@@ -174,6 +279,7 @@ class BegiraClient:
             payload["height"] = int(height)
         if k is not None:
             payload["intrinsicMatrix"] = k
+        payload.update(_time_body(frame=frame, timestamp=timestamp, static=static))
 
         with httpx.Client(base_url=self.base_url, timeout=timeout_s) as client:
             res = client.post("/api/elements/cameras", json=payload)
@@ -193,6 +299,9 @@ class BegiraClient:
         *,
         element_id: str | None = None,
         point_size: float | None = 0.05,
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        static: bool = False,
         timeout_s: float = 60.0,
     ) -> PointCloudHandle:
         """Upload (add/update) a pointcloud element into a running server."""
@@ -232,6 +341,7 @@ class BegiraClient:
             payload = pos.tobytes(order="C")
 
         import httpx
+        time_fields = _time_body(frame=frame, timestamp=timestamp, static=static)
 
         with httpx.Client(base_url=self.base_url, timeout=timeout_s) as client:
             req = {
@@ -241,6 +351,7 @@ class BegiraClient:
                 "hasColor": bool(has_color),
                 "pointSize": float(point_size) if point_size is not None else None,
             }
+            req.update(time_fields)
             res = client.post("/api/elements/pointclouds/upload", json=req)
             if res.status_code >= 400:
                 raise RuntimeError(f"Upload request failed: {res.status_code} {res.text}")
@@ -254,6 +365,12 @@ class BegiraClient:
             params = {"name": name, "hasColor": "1" if has_color else "0"}
             if point_size is not None:
                 params["pointSize"] = str(float(point_size))
+            if "frame" in time_fields:
+                params["frame"] = str(time_fields["frame"])
+            if "timestamp" in time_fields:
+                params["timestamp"] = str(time_fields["timestamp"])
+            if "static" in time_fields:
+                params["static"] = "true"
 
             put = client.put(
                 upload_url,
@@ -276,6 +393,9 @@ class BegiraClient:
         width: int | None = None,
         height: int | None = None,
         channels: int | None = None,
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        static: bool = False,
         element_id: str | None = None,
         timeout_s: float = 60.0,
     ) -> ImageHandle:
@@ -296,6 +416,7 @@ class BegiraClient:
         )
 
         import httpx
+        time_fields = _time_body(frame=frame, timestamp=timestamp, static=static)
 
         with httpx.Client(base_url=self.base_url, timeout=timeout_s) as client:
             req = {
@@ -306,6 +427,7 @@ class BegiraClient:
                 "channels": int(channels),
                 "mimeType": str(mime),
             }
+            req.update(time_fields)
             res = client.post("/api/elements/images/upload", json=req)
             if res.status_code >= 400:
                 raise RuntimeError(f"Upload request failed: {res.status_code} {res.text}")
@@ -324,6 +446,9 @@ class BegiraClient:
                     "width": str(int(width)),
                     "height": str(int(height)),
                     "channels": str(int(channels)),
+                    **({"frame": str(time_fields["frame"])} if "frame" in time_fields else {}),
+                    **({"timestamp": str(time_fields["timestamp"])} if "timestamp" in time_fields else {}),
+                    **({"static": "true"} if "static" in time_fields else {}),
                 },
                 content=data,
                 headers={"content-type": "application/octet-stream"},
@@ -345,6 +470,9 @@ class BegiraClient:
         rotations: np.ndarray | None = None,
         *,
         element_id: str | None = None,
+        frame: int | None = None,
+        timestamp: float | datetime | None = None,
+        static: bool = False,
         timeout_s: float = 60.0,
     ) -> GaussianHandle:
         """Upload (add/update) a 3D Gaussian Splatting element into a running server."""
@@ -397,9 +525,10 @@ class BegiraClient:
         payload = payload_data.tobytes(order="C")
 
         import httpx
+        time_fields = _time_body(frame=frame, timestamp=timestamp, static=static)
 
         with httpx.Client(base_url=self.base_url, timeout=timeout_s) as client:
-            req = {"name": name, "elementId": element_id, "count": int(n)}
+            req = {"name": name, "elementId": element_id, "count": int(n), **time_fields}
             res = client.post("/api/elements/gaussians/upload", json=req)
             if res.status_code >= 400:
                 raise RuntimeError(f"Upload request failed: {res.status_code} {res.text}")
@@ -412,7 +541,12 @@ class BegiraClient:
 
             put = client.put(
                 upload_url,
-                params={"name": name},
+                params={
+                    "name": name,
+                    **({"frame": str(time_fields["frame"])} if "frame" in time_fields else {}),
+                    **({"timestamp": str(time_fields["timestamp"])} if "timestamp" in time_fields else {}),
+                    **({"static": "true"} if "static" in time_fields else {}),
+                },
                 content=payload,
                 headers={"content-type": "application/octet-stream"},
             )

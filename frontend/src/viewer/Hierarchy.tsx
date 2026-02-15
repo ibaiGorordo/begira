@@ -1,9 +1,10 @@
 import type { ElementInfo } from './api'
+import { buildHierarchyElementDragPayload, HIERARCHY_DRAG_MIME } from './dragPayload'
 
 export type HierarchyViewInfo = {
   id: string
   name: string
-  kind: '3d' | 'image'
+  kind: '3d' | 'image' | 'camera'
   visible: boolean
   canDelete: boolean
   canReorder: boolean
@@ -17,7 +18,6 @@ export type HierarchyProps = {
   onFocus: (id: string) => void
   onToggleVisibility: (id: string, visible: boolean) => void
   onDelete: (id: string) => void
-  onAddCamera: () => void
   views: HierarchyViewInfo[]
   onActivateView: (viewId: string) => void
   onToggleViewVisibility: (viewId: string, visible: boolean) => void
@@ -100,7 +100,6 @@ export default function Hierarchy({
   onFocus,
   onToggleVisibility,
   onDelete,
-  onAddCamera,
   views,
   onActivateView,
   onToggleViewVisibility,
@@ -110,25 +109,23 @@ export default function Hierarchy({
   const items = elements ?? []
   const byId = new Map(items.map((e) => [e.id, e]))
   const reorderableViewIds = views.filter((v) => v.canReorder).map((v) => v.id)
+  const handleElementDragStart = (event: React.DragEvent<HTMLButtonElement>, element: ElementInfo) => {
+    if (element.type !== 'camera') return
+    const payload = buildHierarchyElementDragPayload(element)
+    event.dataTransfer.setData(HIERARCHY_DRAG_MIME, JSON.stringify(payload))
+    event.dataTransfer.setData('text/plain', `${element.type}:${element.id}`)
+    event.dataTransfer.effectAllowed = 'copy'
+  }
 
   return (
     <div className="scene-layout">
       <div>
         <h2 className="panel-title">Scene</h2>
-        <div className="panel-subtitle">Sources and blueprint</div>
+        <div className="panel-subtitle">Scene hierarchy and views</div>
       </div>
 
       <div className="section-card">
-        <div className="section-head">Actions</div>
-        <div style={{ padding: 10 }}>
-          <button className="toolbar-btn" onClick={onAddCamera}>
-            Add Camera
-          </button>
-        </div>
-      </div>
-
-      <div className="section-card">
-        <div className="section-head">Blueprint</div>
+        <div className="section-head">Hierarchy</div>
         <div style={{ padding: 8, display: 'grid', gap: 8 }}>
           {views.map((view) => {
             const reorderIndex = reorderableViewIds.indexOf(view.id)
@@ -152,8 +149,8 @@ export default function Hierarchy({
                     title={view.id}
                   >
                     <div className="view-title-line">
-                      <span className={`type-icon-wrap view-kind ${view.kind === '3d' ? 'kind-3d' : 'kind-2d'}`}>
-                        <MinimalIcon kind={view.kind === '3d' ? 'view3d' : 'view2d'} />
+                      <span className={`type-icon-wrap view-kind ${view.kind === '3d' ? 'kind-3d' : view.kind === 'camera' ? 'type-camera' : 'kind-2d'}`}>
+                        <MinimalIcon kind={view.kind === '3d' ? 'view3d' : view.kind === 'camera' ? 'camera' : 'view2d'} />
                       </span>
                       <div className="primary">{view.name}</div>
                     </div>
@@ -210,10 +207,12 @@ export default function Hierarchy({
                           onChange={(e) => onToggleVisibility(element.id, e.target.checked)}
                         />
                         <button
-                          className={`item-btn${selected ? ' selected' : ''}`}
+                          className={`item-btn${selected ? ' selected' : ''}${element.type === 'camera' ? ' draggable' : ''}`}
                           onClick={() => onSelect(element.id)}
                           onDoubleClick={() => onFocus(element.id)}
                           title={element.id}
+                          draggable={element.type === 'camera'}
+                          onDragStart={(event) => handleElementDragStart(event, element)}
                         >
                           <div className="item-title-line">
                             <span className={`type-icon-wrap type-${element.type}`}>
@@ -237,7 +236,7 @@ export default function Hierarchy({
         </div>
       </div>
 
-      <div className="panel-subtitle">Tip: Double-click an image element to activate its linked 2D view.</div>
+      <div className="panel-subtitle">Tip: Double-click an image or camera element to activate its linked view.</div>
     </div>
   )
 }

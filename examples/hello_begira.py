@@ -27,7 +27,17 @@ def main() -> None:
         "main_camera",
         fov=60.0,
     )
-    main_camera.look_at(gs_obj, 6)
+    main_camera.look_at(gs_obj, 6.0)
+
+    # Temporal camera path: move farther away over frames while continuously
+    # looking at the gaussian object.
+    num_frames = 180
+    start_distance = 6.0
+    end_distance = 22.0
+    for frame in range(num_frames):
+        t = frame / float(max(1, num_frames - 1))
+        distance = (1.0 - t) * start_distance + t * end_distance
+        main_camera.look_at(gs_obj, distance=distance, frame=frame)
 
     try:
         while True:

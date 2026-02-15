@@ -1,14 +1,20 @@
-import { useEffect, useState } from 'react'
-import { fetchCameraElementMeta, type CameraElementMeta } from './api'
+import { useEffect, useRef, useState } from 'react'
+import { fetchCameraElementMeta, type CameraElementMeta, type SampleQuery } from './api'
 
 export type UseCameraState =
   | { status: 'loading' }
   | { status: 'error'; error: Error }
   | { status: 'ready'; meta: CameraElementMeta }
 
-export function useCamera(elementId: string): UseCameraState {
+function sampleDep(sample?: SampleQuery): string {
+  return `${sample?.frame ?? 'na'}|${sample?.timestamp ?? 'na'}`
+}
+
+export function useCamera(elementId: string, sample?: SampleQuery, enabled = true): UseCameraState {
   const [meta, setMeta] = useState<CameraElementMeta | null>(null)
   const [error, setError] = useState<Error | null>(null)
+  const lastIdRef = useRef<string | null>(null)
+  const dep = sampleDep(sample)
 
   useEffect(() => {
     if (!elementId) {
@@ -16,54 +22,34 @@ export function useCamera(elementId: string): UseCameraState {
       setError(null)
       return
     }
+    if (!enabled) return
 
     let cancelled = false
-    setMeta(null)
     setError(null)
+    if (lastIdRef.current !== elementId) {
+      lastIdRef.current = elementId
+      setMeta(null)
+    }
 
-    fetchCameraElementMeta(elementId)
-      .then((m) => {
+    const sync = async () => {
+      try {
+        const m = await fetchCameraElementMeta(elementId, sample)
         if (cancelled) return
         setMeta(m)
-      })
-      .catch((e: unknown) => {
+      } catch (e: unknown) {
         if (cancelled) return
         setError(e instanceof Error ? e : new Error(String(e)))
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [elementId])
-
-  useEffect(() => {
-    let cancelled = false
-    if (!elementId) return
-
-    const tick = async () => {
-      try {
-        const m = await fetchCameraElementMeta(elementId)
-        if (cancelled) return
-        setMeta((prev) => {
-          if (!prev || prev.revision !== m.revision) return m
-          if (String(prev.visible) !== String(m.visible)) return m
-          if (JSON.stringify(prev.position) !== JSON.stringify(m.position)) return m
-          if (JSON.stringify(prev.rotation) !== JSON.stringify(m.rotation)) return m
-          if (prev.fov !== m.fov || prev.near !== m.near || prev.far !== m.far) return m
-          return prev
-        })
-      } catch {
-        // ignore periodic errors
       }
     }
 
-    const id = window.setInterval(() => void tick(), 1500)
-    void tick()
+    void sync()
+    const id = window.setInterval(() => void sync(), 750)
+
     return () => {
       cancelled = true
       window.clearInterval(id)
     }
-  }, [elementId])
+  }, [elementId, dep, enabled])
 
   if (error) return { status: 'error', error }
   if (!meta) return { status: 'loading' }

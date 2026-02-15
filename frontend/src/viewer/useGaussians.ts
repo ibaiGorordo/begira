@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
-import { fetchBinaryPayload, fetchGaussianElementMeta, GaussianSplatElementMeta } from './api'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { fetchBinaryPayload, fetchGaussianElementMeta, type GaussianSplatElementMeta, type SampleQuery } from './api'
 import { decodeGaussians, DecodedGaussians } from './gaussiansGeometry'
 
 export type UseGaussiansState =
@@ -7,70 +7,65 @@ export type UseGaussiansState =
   | { status: 'error'; error: Error }
   | { status: 'ready'; meta: GaussianSplatElementMeta; decoded: DecodedGaussians }
 
-export function useGaussians(elementId: string): UseGaussiansState {
+function sampleDep(sample?: SampleQuery): string {
+  return `${sample?.frame ?? 'na'}|${sample?.timestamp ?? 'na'}`
+}
+
+export function useGaussians(elementId: string, sample?: SampleQuery, enabled = true): UseGaussiansState {
   const [meta, setMeta] = useState<GaussianSplatElementMeta | null>(null)
   const [payload, setPayload] = useState<ArrayBuffer | null>(null)
   const [error, setError] = useState<Error | null>(null)
+  const payloadKeyRef = useRef<string | null>(null)
+  const prevIdRef = useRef<string | null>(null)
+  const dep = sampleDep(sample)
 
   useEffect(() => {
     if (!elementId) {
       setMeta(null)
       setPayload(null)
       setError(null)
+      payloadKeyRef.current = null
+      prevIdRef.current = null
       return
     }
+    if (!enabled) return
 
     let cancelled = false
-    setMeta(null)
-    setPayload(null)
     setError(null)
+    if (prevIdRef.current !== elementId) {
+      prevIdRef.current = elementId
+      setMeta(null)
+      setPayload(null)
+      payloadKeyRef.current = null
+    }
 
-    fetchGaussianElementMeta(elementId)
-      .then((m) => {
+    const sync = async () => {
+      try {
+        const m = await fetchGaussianElementMeta(elementId, sample)
         if (cancelled) return
+
         setMeta(m)
-        return fetchBinaryPayload(m.payloads.gaussians.url)
-      })
-      .then((buf) => {
-        if (cancelled || !buf) return
-        setPayload(buf)
-      })
-      .catch((e: unknown) => {
+        const payloadKey = `${m.payloads.gaussians.url}|${m.dataRevision}`
+        if (payloadKey !== payloadKeyRef.current) {
+          const buf = await fetchBinaryPayload(m.payloads.gaussians.url, sample)
+          if (cancelled) return
+          payloadKeyRef.current = payloadKey
+          setPayload(buf)
+        }
+      } catch (e: unknown) {
         if (cancelled) return
         setError(e instanceof Error ? e : new Error(String(e)))
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [elementId])
-
-  useEffect(() => {
-    let cancelled = false
-    if (!elementId) return
-
-    const tick = async () => {
-      try {
-        const m = await fetchGaussianElementMeta(elementId)
-        if (cancelled) return
-        setMeta((prev) => {
-          if (!prev || prev.revision !== m.revision) return m
-          if (String(prev.visible) !== String(m.visible)) return m
-          if (JSON.stringify(prev.position) !== JSON.stringify(m.position)) return m
-          if (JSON.stringify(prev.rotation) !== JSON.stringify(m.rotation)) return m
-          return prev
-        })
-      } catch {
-        // ignore
       }
     }
 
-    const id = window.setInterval(() => void tick(), 750)
+    void sync()
+    const id = window.setInterval(() => void sync(), 750)
+
     return () => {
       cancelled = true
       window.clearInterval(id)
     }
-  }, [elementId])
+  }, [elementId, dep, enabled])
 
   const decoded = useMemo(() => {
     if (!meta || !payload) return null

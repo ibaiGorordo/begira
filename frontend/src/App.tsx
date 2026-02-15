@@ -1,11 +1,24 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { fetchElementMeta, fetchElements, fetchEvents, updateElementMeta, deleteElement, resetProject, createCamera, type ElementInfo } from './viewer/api'
+import {
+  fetchElementMeta,
+  fetchElements,
+  fetchEvents,
+  updateElementMeta,
+  deleteElement,
+  resetProject,
+  type ElementInfo,
+} from './viewer/api'
 import Inspector from './viewer/Inspector'
 import Hierarchy, { type HierarchyProps, type HierarchyViewInfo } from './viewer/Hierarchy'
 import DockWorkspace, { type DockImageView, type DockWorkspaceHandle } from './viewer/DockWorkspace'
+import TimelineBar from './viewer/TimelineBar'
+import { useTimeline } from './viewer/useTimeline'
+import { usePageActivity } from './viewer/usePageActivity'
+import { HIERARCHY_DRAG_MIME, parseHierarchyElementDragPayload } from './viewer/dragPayload'
 
 const MAIN_3D_VIEW_ID = 'view-3d-main'
 const IMAGE_VIEW_PREFIX = 'view-image-'
+const CAMERA_VIEW_PREFIX = 'view-camera-'
 
 function imageViewId(imageId: string): string {
   return `${IMAGE_VIEW_PREFIX}${imageId}`
@@ -14,6 +27,15 @@ function imageViewId(imageId: string): string {
 function imageIdFromViewId(viewId: string): string | null {
   if (!viewId.startsWith(IMAGE_VIEW_PREFIX)) return null
   return viewId.slice(IMAGE_VIEW_PREFIX.length)
+}
+
+function cameraViewId(cameraId: string): string {
+  return `${CAMERA_VIEW_PREFIX}${cameraId}`
+}
+
+function cameraIdFromViewId(viewId: string): string | null {
+  if (!viewId.startsWith(CAMERA_VIEW_PREFIX)) return null
+  return viewId.slice(CAMERA_VIEW_PREFIX.length)
 }
 
 function centerFromBounds(bounds?: { min: [number, number, number]; max: [number, number, number] }): [number, number, number] | null {
@@ -93,6 +115,7 @@ function EdgeReopenButton({
 }
 
 export default function App() {
+  const pageActive = usePageActivity()
   const [elements, setElements] = useState<ElementInfo[] | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -116,11 +139,15 @@ export default function App() {
   const [threeDViewVisible, setThreeDViewVisible] = useState(true)
   const [imageViewOrder, setImageViewOrder] = useState<string[]>([])
   const [imageViewState, setImageViewState] = useState<Record<string, { visible: boolean; deleted: boolean }>>({})
+  const [cameraViewOrder, setCameraViewOrder] = useState<string[]>([])
+  const [cameraViewState, setCameraViewState] = useState<Record<string, { visible: boolean; deleted: boolean }>>({})
+  const timeline = useTimeline({ enabled: pageActive })
 
   const pointclouds = useMemo(() => (elements ?? []).filter((e) => e.type === 'pointcloud'), [elements])
   const gaussians = useMemo(() => (elements ?? []).filter((e) => e.type === 'gaussians'), [elements])
   const cameras = useMemo(() => (elements ?? []).filter((e) => e.type === 'camera'), [elements])
   const images = useMemo(() => (elements ?? []).filter((e) => e.type === 'image'), [elements])
+  const camerasById = useMemo(() => new Map(cameras.map((cam) => [cam.id, cam])), [cameras])
   const imagesById = useMemo(() => new Map(images.map((img) => [img.id, img])), [images])
 
   useEffect(() => {
@@ -143,6 +170,29 @@ export default function App() {
       return next
     })
   }, [images])
+
+  useEffect(() => {
+    const ids = cameras.map((cam) => cam.id)
+    const idSet = new Set(ids)
+
+    setCameraViewOrder((prev) => {
+      const kept = prev.filter((id) => idSet.has(id))
+      return kept.length === prev.length ? prev : kept
+    })
+
+    setCameraViewState((prev) => {
+      let changed = false
+      const next: Record<string, { visible: boolean; deleted: boolean }> = {}
+      for (const [id, state] of Object.entries(prev)) {
+        if (!idSet.has(id)) {
+          changed = true
+          continue
+        }
+        next[id] = state
+      }
+      return changed ? next : prev
+    })
+  }, [cameras])
 
   const imageViews = useMemo(() => {
     const out: Array<{ id: string; imageId: string; name: string; visible: boolean; deleted: boolean; elementVisible: boolean }> = []
@@ -175,6 +225,44 @@ export default function App() {
     [imageViews]
   )
 
+  const cameraViews = useMemo(() => {
+    const out: Array<{
+      id: string
+      cameraId: string
+      name: string
+      visible: boolean
+      deleted: boolean
+      elementVisible: boolean
+    }> = []
+    for (const cameraId of cameraViewOrder) {
+      const cam = camerasById.get(cameraId)
+      if (!cam) continue
+      const state = cameraViewState[cameraId] ?? { visible: false, deleted: false }
+      out.push({
+        id: cameraViewId(cameraId),
+        cameraId,
+        name: `${cam.name} view`,
+        visible: state.visible,
+        deleted: state.deleted,
+        elementVisible: cam.visible !== false,
+      })
+    }
+    return out
+  }, [cameraViewOrder, cameraViewState, camerasById])
+
+  const dockCameraViews = useMemo(
+    () =>
+      cameraViews
+        .filter((v) => !v.deleted && v.visible && v.elementVisible)
+        .map((v) => ({
+          id: v.id,
+          cameraId: v.cameraId,
+          name: v.name,
+          visible: true,
+        })),
+    [cameraViews]
+  )
+
   const hierarchyViews = useMemo<HierarchyViewInfo[]>(() => {
     const threeDElementIds = (elements ?? []).filter((e) => e.type !== 'image').map((e) => e.id)
     return [
@@ -198,8 +286,19 @@ export default function App() {
           canReorder: true,
           elementIds: [v.imageId],
         })),
+      ...cameraViews
+        .filter((v) => !v.deleted)
+        .map((v) => ({
+          id: v.id,
+          name: v.name,
+          kind: 'camera' as const,
+          visible: v.visible && v.elementVisible,
+          canDelete: true,
+          canReorder: false,
+          elementIds: [v.cameraId],
+        })),
     ]
-  }, [elements, imageViews, threeDViewVisible])
+  }, [cameraViews, elements, imageViews, threeDViewVisible])
 
   const lookAtTargets = useMemo(
     () =>
@@ -237,6 +336,45 @@ export default function App() {
     }, 0)
   }
 
+  const setCameraViewFlags = (cameraId: string, patch: Partial<{ visible: boolean; deleted: boolean }>) => {
+    setCameraViewState((prev) => {
+      const cur = prev[cameraId] ?? { visible: false, deleted: false }
+      return { ...prev, [cameraId]: { ...cur, ...patch } }
+    })
+  }
+
+  const openCameraView = (cameraId: string) => {
+    const cam = camerasById.get(cameraId)
+    if (!cam) return
+    setCameraViewOrder((prev) => (prev.includes(cameraId) ? prev : [...prev, cameraId]))
+    setCameraViewFlags(cameraId, { visible: true, deleted: false })
+    setSelectedId(cameraId)
+    setFocusTarget(cameraId)
+    window.setTimeout(() => {
+      workspaceRef.current?.focusCamera(cameraId)
+    }, 0)
+  }
+
+  const hasHierarchyDragPayload = (dataTransfer: DataTransfer | null): boolean => {
+    if (!dataTransfer) return false
+    return Array.from(dataTransfer.types).includes(HIERARCHY_DRAG_MIME)
+  }
+
+  const handleWorkspaceDragOver = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!hasHierarchyDragPayload(event.dataTransfer)) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+  }
+
+  const handleWorkspaceDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!hasHierarchyDragPayload(event.dataTransfer)) return
+    event.preventDefault()
+    const raw = event.dataTransfer.getData(HIERARCHY_DRAG_MIME)
+    const payload = parseHierarchyElementDragPayload(raw)
+    if (!payload || payload.elementType !== 'camera') return
+    openCameraView(payload.elementId)
+  }
+
   const orderElements = (items: ElementInfo[]) => {
     const orderMap = orderRef.current
     let next = nextOrderRef.current
@@ -251,61 +389,62 @@ export default function App() {
   }
 
   useEffect(() => {
-    fetchElements()
-      .then((items) => {
+    if (!pageActive) return
+    let cancelled = false
+    const load = async () => {
+      try {
+        const items = await fetchElements(timeline.sampleQuery)
+        if (cancelled) return
         const ordered = orderElements(items)
         setElements(ordered)
-        setSelectedId(null)
+        setSelectedId((cur) => {
+          if (!cur) return cur
+          return ordered.some((e) => e.id === cur) ? cur : null
+        })
 
-        // Default focus: first element that appears (only once).
-        if (!didInitFocus.current) {
-          if (ordered.length > 0) {
-            didInitFocus.current = true
-            setFocusTarget(ordered[0].id)
-          }
-        }
-      })
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
-  }, [])
-
-  useEffect(() => {
-    let cancelled = false
-
-    const tick = async () => {
-      try {
-        const ev = await fetchEvents()
-        if (cancelled) return
-
-        if (ev.globalRevision !== lastRev.current) {
-          lastRev.current = ev.globalRevision
-          const items = await fetchElements()
-          if (cancelled) return
-          const ordered = orderElements(items)
-          setElements(ordered)
-
-          if (ordered.length === 0) {
-            setSelectedId(null)
-            return
-          }
-
-          if (selectedId !== null && !ordered.some((c) => c.id === selectedId)) {
-            setSelectedId(null)
-          }
+        if (!didInitFocus.current && ordered.length > 0) {
+          didInitFocus.current = true
+          setFocusTarget(ordered[0].id)
         }
       } catch (e: unknown) {
         if (cancelled) return
         setError(e instanceof Error ? e.message : String(e))
       }
     }
+    void load()
+    return () => {
+      cancelled = true
+    }
+  }, [pageActive, timeline.sampleKey])
 
+  useEffect(() => {
+    if (!pageActive) return
+    let cancelled = false
+    const tick = async () => {
+      try {
+        const ev = await fetchEvents()
+        if (cancelled) return
+        if (ev.globalRevision === lastRev.current) return
+        lastRev.current = ev.globalRevision
+        const items = await fetchElements(timeline.sampleQuery)
+        if (cancelled) return
+        const ordered = orderElements(items)
+        setElements(ordered)
+        setSelectedId((cur) => {
+          if (!cur) return cur
+          return ordered.some((e) => e.id === cur) ? cur : null
+        })
+      } catch {
+        // Ignore transient poll errors.
+      }
+    }
     const id = window.setInterval(() => void tick(), 1000)
     void tick()
-
     return () => {
       cancelled = true
       window.clearInterval(id)
     }
-  }, [selectedId])
+  }, [pageActive, timeline.sampleKey])
 
   const selected = useMemo(() => {
     if (!elements || selectedId === null) return null
@@ -317,6 +456,14 @@ export default function App() {
       setActiveCameraId(null)
     }
   }, [activeCameraId, elements])
+
+  useEffect(() => {
+    try {
+      const anyWin = window as any
+      anyWin.__begira_local_pose = {}
+      window.dispatchEvent(new CustomEvent('begira_local_pose_cleared'))
+    } catch {}
+  }, [timeline.sampleKey])
 
   const bumpHistory = () => {
     setHistoryCounts({
@@ -444,14 +591,14 @@ export default function App() {
       label: visible ? 'Show' : 'Hide',
       do: async () => {
         await updateElementMeta(id, { visible })
-        const freshMeta = visible ? await fetchElementMeta(id).catch(() => null) : null
+        const freshMeta = visible ? await fetchElementMeta(id, timeline.sampleQuery).catch(() => null) : null
         const patch = freshMeta ? extractFreshElementPatch(id, freshMeta) : {}
         setElements((cur) => (cur ? cur.map((e) => (e.id === id ? { ...e, ...patch, visible } : e)) : cur))
       },
       undo: async () => {
         const undoVisible = prev?.visible !== false
         await updateElementMeta(id, { visible: undoVisible })
-        const freshMeta = undoVisible ? await fetchElementMeta(id).catch(() => null) : null
+        const freshMeta = undoVisible ? await fetchElementMeta(id, timeline.sampleQuery).catch(() => null) : null
         const patch = freshMeta ? extractFreshElementPatch(id, freshMeta) : {}
         setElements((cur) => (cur ? cur.map((e) => (e.id === id ? { ...e, ...patch, visible: undoVisible } : e)) : cur))
       },
@@ -488,9 +635,16 @@ export default function App() {
   const resetAll = async () => {
     resettingRef.current = true
     setIsResetting(true)
+    timeline.reinitialize()
     setHistoryCounts({ undo: 0, redo: 0 })
     await resetProject()
-    const items = await fetchElements()
+    let refreshSample = timeline.sampleQuery
+    try {
+      refreshSample = await timeline.refresh({ reinitialize: true })
+    } catch {
+      // keep current timeline cursor on refresh failures
+    }
+    const items = await fetchElements(refreshSample)
     setElements(orderElements(items))
     setActiveCameraId(null)
     try {
@@ -506,21 +660,9 @@ export default function App() {
     setIsResetting(false)
   }
 
-  const addCameraFromView = async () => {
-    try {
-      const cam = (window as any).__begira_view_camera as { position: [number, number, number]; rotation: [number, number, number, number]; fov: number; near: number; far: number } | undefined
-      const payload = cam
-        ? { name: `Camera ${cameras.length + 1}`, position: cam.position, rotation: cam.rotation, fov: cam.fov, near: cam.near, far: cam.far }
-        : { name: `Camera ${cameras.length + 1}` }
-      await createCamera(payload)
-    } catch (e: unknown) {
-      console.error(e)
-    }
-  }
-
   const onTransformCommit = async (id: string, position: [number, number, number], rotation: [number, number, number, number]) => {
     if (resettingRef.current) return
-    const prev = await fetchElementMeta(id)
+    const prev = await fetchElementMeta(id, timeline.sampleQuery)
     const prevPos: [number, number, number] = (prev.position ?? [0, 0, 0]) as [number, number, number]
     const prevRot: [number, number, number, number] = (prev.rotation ?? [0, 0, 0, 1]) as [number, number, number, number]
     const qLen = Math.hypot(rotation[0], rotation[1], rotation[2], rotation[3]) || 1
@@ -635,13 +777,16 @@ export default function App() {
                   },
                   onToggleVisibility: (id: string, visible: boolean) => void applyVisibility(id, visible),
                   onDelete: (id: string) => void removeElement(id),
-                  onAddCamera: () => void addCameraFromView(),
                   views: hierarchyViews,
                   onActivateView: (viewId: string) => {
                     if (viewId === MAIN_3D_VIEW_ID) return
                     const imageId = imageIdFromViewId(viewId)
-                    if (!imageId) return
-                    openImageView(imageId)
+                    if (imageId) {
+                      openImageView(imageId)
+                      return
+                    }
+                    const cameraId = cameraIdFromViewId(viewId)
+                    if (cameraId) openCameraView(cameraId)
                   },
                   onToggleViewVisibility: (viewId: string, visible: boolean) => {
                     if (viewId === MAIN_3D_VIEW_ID) {
@@ -649,30 +794,43 @@ export default function App() {
                       return
                     }
                     const imageId = imageIdFromViewId(viewId)
-                    if (!imageId) return
-                    setImageViewFlags(imageId, { visible })
-                    void applyVisibility(imageId, visible)
+                    if (imageId) {
+                      setImageViewFlags(imageId, { visible })
+                      void applyVisibility(imageId, visible)
+                      return
+                    }
+                    const cameraId = cameraIdFromViewId(viewId)
+                    if (!cameraId) return
+                    setCameraViewFlags(cameraId, { visible })
                   },
                   onDeleteView: (viewId: string) => {
                     const imageId = imageIdFromViewId(viewId)
-                    if (!imageId) return
-                    setImageViewFlags(imageId, { deleted: true, visible: false })
-                    setImageViewOrder((prev) => prev.filter((id) => id !== imageId))
+                    if (imageId) {
+                      setImageViewFlags(imageId, { deleted: true, visible: false })
+                      setImageViewOrder((prev) => prev.filter((id) => id !== imageId))
+                      return
+                    }
+                    const cameraId = cameraIdFromViewId(viewId)
+                    if (!cameraId) return
+                    setCameraViewFlags(cameraId, { deleted: true, visible: false })
+                    setCameraViewOrder((prev) => prev.filter((id) => id !== cameraId))
                   },
                   onMoveView: (viewId: string, direction: 'up' | 'down') => {
                     const imageId = imageIdFromViewId(viewId)
-                    if (!imageId) return
-                    setImageViewOrder((prev) => {
-                      const idx = prev.indexOf(imageId)
-                      if (idx < 0) return prev
-                      const nextIdx = direction === 'up' ? idx - 1 : idx + 1
-                      if (nextIdx < 0 || nextIdx >= prev.length) return prev
-                      const out = [...prev]
-                      const tmp = out[idx]
-                      out[idx] = out[nextIdx]
-                      out[nextIdx] = tmp
-                      return out
-                    })
+                    if (imageId) {
+                      setImageViewOrder((prev) => {
+                        const idx = prev.indexOf(imageId)
+                        if (idx < 0) return prev
+                        const nextIdx = direction === 'up' ? idx - 1 : idx + 1
+                        if (nextIdx < 0 || nextIdx >= prev.length) return prev
+                        const out = [...prev]
+                        const tmp = out[idx]
+                        out[idx] = out[nextIdx]
+                        out[nextIdx] = tmp
+                        return out
+                      })
+                      return
+                    }
                   },
                 } satisfies HierarchyProps)}
               />
@@ -687,7 +845,7 @@ export default function App() {
           onResizeStart={(e) => beginResize('left', e)}
         />
 
-        <div className="workspace-shell" style={{ flex: 1 }}>
+        <div className="workspace-shell" style={{ flex: 1 }} onDragOver={handleWorkspaceDragOver} onDrop={handleWorkspaceDrop}>
           <DockWorkspace
             ref={workspaceRef}
             pointclouds={pointclouds}
@@ -707,6 +865,8 @@ export default function App() {
             onTransformCommit={(id, position, rotation) => void onTransformCommit(id, position, rotation)}
             show3D={threeDViewVisible}
             imageViews={dockImageViews}
+            cameraViews={dockCameraViews}
+            sample={timeline.sampleQuery}
           />
         </div>
 
@@ -741,11 +901,29 @@ export default function App() {
                 onTransformModeChange={setTransformMode}
                 onPoseCommit={(id, position, rotation) => void onTransformCommit(id, position, rotation)}
                 lookAtTargets={lookAtTargets}
+                sample={timeline.sampleQuery}
+                enabled={pageActive}
+                onOpenCameraView={openCameraView}
               />
             </div>
           </div>
         )}
       </div>
+
+      <TimelineBar
+        axis={timeline.axis}
+        value={timeline.value}
+        bounds={timeline.bounds}
+        isPlaying={timeline.isPlaying}
+        playbackFps={timeline.playbackFps}
+        onAxisChange={timeline.setAxis}
+        onValueChange={timeline.setValue}
+        onTogglePlay={timeline.togglePlay}
+        onScrubStart={timeline.beginScrub}
+        onScrubEnd={timeline.endScrub}
+        onStep={timeline.step}
+        onPlaybackFpsChange={timeline.setPlaybackFps}
+      />
     </div>
   )
 }
