@@ -113,8 +113,9 @@ export default function CameraTrajectoryScene({
       max.max(new THREE.Vector3(p[0], p[1], p[2]))
     }
     const diag = max.sub(min).length()
-    return clamp(diag * 0.0018, 0.008, 0.03)
+    return clamp(diag * 0.0022, 0.01, 0.035)
   }, [trajectory])
+  const markerHitRadius = useMemo(() => Math.max(markerRadius * 2.2, markerRadius + 0.02), [markerRadius])
 
   if (!track || !trajectory || !lineGeometry) return null
 
@@ -137,40 +138,51 @@ export default function CameraTrajectoryScene({
         const selected = selectedKeyFrame === key.frame
         const hovered = hoveredKeyFrame === key.frame
         return (
-          <mesh
+          <group
             key={`key-${key.frame}`}
             ref={(obj) => onRegisterKeyObject?.(key.frame, obj)}
             position={key.position}
             renderOrder={4010}
             frustumCulled={false}
-            onPointerDown={(e) => {
-              e.stopPropagation()
-            }}
-            onPointerUp={(e) => {
-              e.stopPropagation()
-            }}
-            onClick={(e) => {
-              e.stopPropagation()
-              onSelectKey(key.frame)
-            }}
-            onPointerOver={(e) => {
-              e.stopPropagation()
-              setHoveredKeyFrame(key.frame)
-            }}
-            onPointerOut={(e) => {
-              e.stopPropagation()
-              setHoveredKeyFrame((prev) => (prev === key.frame ? null : prev))
-            }}
           >
-            <sphereGeometry args={[markerRadius, 18, 18]} />
-            <meshBasicMaterial
-              color={selected ? '#ffe7a8' : key.color}
-              depthTest
-              depthWrite={false}
-              transparent
-              opacity={selected || hovered ? 0.98 : 0.86}
-              toneMapped={false}
-            />
+            <mesh
+              frustumCulled={false}
+              onPointerDown={(e) => {
+                e.stopPropagation()
+              }}
+              onPointerUp={(e) => {
+                e.stopPropagation()
+              }}
+              onClick={(e) => {
+                e.stopPropagation()
+                onSelectKey(key.frame)
+              }}
+              onPointerOver={(e) => {
+                e.stopPropagation()
+                setHoveredKeyFrame(key.frame)
+              }}
+              onPointerOut={(e) => {
+                e.stopPropagation()
+                setHoveredKeyFrame((prev) => (prev === key.frame ? null : prev))
+              }}
+            >
+              <sphereGeometry args={[markerHitRadius, 10, 10]} />
+              <meshBasicMaterial transparent opacity={0} depthWrite={false} toneMapped={false} />
+            </mesh>
+            <mesh
+              renderOrder={4011}
+              frustumCulled={false}
+            >
+              <sphereGeometry args={[markerRadius, 18, 18]} />
+              <meshBasicMaterial
+                color={selected ? '#ffe7a8' : key.color}
+                depthTest
+                depthWrite={false}
+                transparent
+                opacity={selected || hovered ? 0.98 : 0.86}
+                toneMapped={false}
+              />
+            </mesh>
             {(selected || hovered) && (
               <Html position={[0, markerRadius * 1.9, 0]} center sprite style={{ pointerEvents: 'none' }}>
                 <div
@@ -189,7 +201,7 @@ export default function CameraTrajectoryScene({
                 </div>
               </Html>
             )}
-          </mesh>
+          </group>
         )
       })}
     </group>
